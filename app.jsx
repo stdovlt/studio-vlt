@@ -1,0 +1,2302 @@
+import { useState, useRef } from "react";
+
+// ── constants ──────────────────────────────────────────────
+const BOOK_STAGES = ["Concept", "Writing", "Design", "Print Ready", "Printed", "Distributing"];
+const PRIORITY_COLORS = { high: "#c0392b", medium: "#e67e22", low: "#7f8c8d" };
+const PRIORITY_LABELS = { high: "긴급", medium: "보통", low: "나중에" };
+const BOOK_TABS = ["기획서", "제작 진행상황", "최종 제책", "회계", "인벤토리"];
+const EVENT_TYPES = {
+  deadline:    { label: "마감",    color: "#c0392b" },
+  fair:        { label: "페어",    color: "#2980b9" },
+  fair_apply:  { label: "페어 신청", color: "#1abc9c" },
+  meeting:     { label: "미팅",    color: "#8e44ad" },
+  print:       { label: "인쇄",    color: "#27ae60" },
+  other:       { label: "기타",    color: "#7f8c8d" },
+};
+const DEFAULT_CARDS = [
+  { id: "c1", name: "하나 체크" },
+  { id: "c2", name: "하나 신용" },
+  { id: "c3", name: "삼성" },
+];
+
+// ── helpers ────────────────────────────────────────────────
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayKR  = () => new Date().toLocaleDateString("ko-KR");
+const uid = () => String(Date.now()) + String(Math.floor(Math.random() * 100000));
+
+const emptyTocItem = () => ({ id: uid(), title: "", note: "" });
+
+const emptyBook = (title = "") => ({
+  id: uid(), title, stage: "Concept", targetFair: "",
+  brief: {
+    startDate: "", targetDate: "", finalDate: "",
+    format: "", edition: "",
+    purpose: "", targetAudience: "", subject: "",
+    tocItems: [],
+    binding: "",
+    references: [], bibliography: [], memoLog: [],
+  },
+  production: {
+    // each tocItem gets a section: { tocId, pages, printMethod, paper, binding, notes }
+    sections: [],
+    printJobs: [],   // { id, date, vendor, pages, cost, memo, addedToFinance }
+    materials: [],   // { id, name, vendor, option, qty, price, link, memo, done, addedToFinance }
+    revisions: [],
+    customFields: [],
+  },
+  finance: [],
+  inventory: [],
+  finalBinding: {},
+  reflection: "",
+});
+
+// ── shared styles ──────────────────────────────────────────
+const S = {
+  card: { background: "#fff", border: "1px solid #e8e3dc", padding: "16px 18px", marginBottom: 12, borderRadius: 2 },
+  btn:  { padding: "8px 16px", background: "#1a1a1a", color: "#f5f2ed", border: "none", fontSize: 11, letterSpacing: 1, cursor: "pointer", fontFamily: "Georgia,serif", borderRadius: 2 },
+  sec:  { padding: "8px 16px", background: "transparent", color: "#666", border: "1px solid #d4cfc8", fontSize: 11, letterSpacing: 1, cursor: "pointer", fontFamily: "Georgia,serif", borderRadius: 2 },
+  inp:  { padding: "8px 10px", border: "1px solid #d4cfc8", fontSize: 13, fontFamily: "Georgia,serif", background: "#faf8f5", color: "#1a1a1a", width: "100%", boxSizing: "border-box", borderRadius: 2 },
+  lbl:  { fontSize: 10, letterSpacing: 2, textTransform: "uppercase", color: "#999" },
+  del:  { background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "0 4px" },
+  mini: { padding: "4px 10px", background: "transparent", color: "#888", border: "1px solid #e0dbd4", fontSize: 10, letterSpacing: 1, cursor: "pointer", fontFamily: "Georgia,serif", borderRadius: 2 },
+};
+
+// ── components ─────────────────────────────────────────────
+function PhotoUpload({ photos = [], onChange, small = false }) {
+  const ref = useRef();
+  const sz = small ? 52 : 68;
+  const add = (e) => {
+    Array.from(e.target.files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = ev => onChange([...photos, { id: uid(), src: ev.target.result, name: file.name }]);
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+      {photos.map(p => (
+        <div key={p.id} style={{ position: "relative" }}>
+          <img src={p.src} alt={p.name} style={{ width: sz, height: sz, objectFit: "cover", borderRadius: 2, border: "1px solid #e8e3dc", display: "block" }} />
+          <button onClick={() => onChange(photos.filter(x => x.id !== p.id))}
+            style={{ position: "absolute", top: -5, right: -5, background: "#1a1a1a", color: "#fff", border: "none", borderRadius: "50%", width: 16, height: 16, fontSize: 10, cursor: "pointer", lineHeight: "16px", textAlign: "center", padding: 0 }}>×</button>
+        </div>
+      ))}
+      <button onClick={() => ref.current.click()} style={{ width: sz, height: sz, border: "1px dashed #d4cfc8", background: "#faf8f5", cursor: "pointer", fontSize: 18, color: "#bbb", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+      <input ref={ref} type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }} onChange={add} />
+    </div>
+  );
+}
+
+function DatedLog({ log = [], onAdd, onDelete, placeholder = "메모 추가..." }) {
+  const [val, setVal] = useState("");
+  const submit = () => { if (!val.trim()) return; onAdd({ id: uid(), date: todayKR(), text: val.trim() }); setVal(""); };
+  return (
+    <div>
+      {log.map(entry => (
+        <div key={entry.id} style={{ display: "flex", gap: 10, padding: "6px 0", borderBottom: "1px solid #f0ece6", alignItems: "flex-start" }}>
+          <span style={{ fontSize: 10, color: "#bbb", minWidth: 80, paddingTop: 2 }}>{entry.date}</span>
+          <span style={{ fontSize: 13, flex: 1, color: "#444", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{entry.text}</span>
+          <button style={S.del} onClick={() => onDelete(entry.id)}>×</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input value={val} onChange={e => setVal(e.target.value)} placeholder={placeholder} style={{ ...S.inp, flex: 1 }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }} />
+        <button style={S.btn} onClick={submit}>기록</button>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div style={S.card}>
+      <div style={{ ...S.lbl, marginBottom: 8 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function Collapsible({ title, children, defaultOpen = false, badge }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <button onClick={() => setOpen(o => !o)} style={{ width: "100%", background: open ? "#1a1a1a" : "#fff", border: "1px solid #e8e3dc", padding: "10px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", borderRadius: 2, fontFamily: "Georgia,serif" }}>
+        <span style={{ fontSize: 13, color: open ? "#f5f2ed" : "#333" }}>{title}</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {badge && <span style={{ fontSize: 10, background: open ? "#ffffff30" : "#1a1a1a20", color: open ? "#f5f2ed" : "#666", padding: "1px 8px", borderRadius: 10 }}>{badge}</span>}
+          <span style={{ fontSize: 12, color: open ? "#f5f2ed" : "#bbb" }}>{open ? "▲" : "▼"}</span>
+        </div>
+      </button>
+      {open && <div style={{ border: "1px solid #e8e3dc", borderTop: "none", padding: "14px 16px", background: "#fff", borderRadius: "0 0 2px 2px" }}>{children}</div>}
+    </div>
+  );
+}
+
+// ── TOC items (brief) with drag-reorder ───────────────────
+function TocEditor({ items, onChange }) {
+  const [dragIdx, setDragIdx] = useState(null);
+  const [newTitle, setNewTitle] = useState("");
+
+  const move = (from, to) => {
+    const arr = [...items];
+    const [item] = arr.splice(from, 1);
+    arr.splice(to, 0, item);
+    onChange(arr);
+  };
+
+  return (
+    <div>
+      {items.map((item, idx) => (
+        <div key={item.id}
+          draggable
+          onDragStart={() => setDragIdx(idx)}
+          onDragOver={e => { e.preventDefault(); }}
+          onDrop={() => { if (dragIdx !== null && dragIdx !== idx) { move(dragIdx, idx); setDragIdx(null); } }}
+          onDragEnd={() => setDragIdx(null)}
+          style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, opacity: dragIdx === idx ? 0.4 : 1 }}>
+          <span style={{ color: "#ccc", cursor: "grab", fontSize: 14, userSelect: "none", paddingTop: 2 }}>⠿</span>
+          <span style={{ fontSize: 11, color: "#bbb", minWidth: 20 }}>{idx + 1}.</span>
+          <input value={item.title} onChange={e => onChange(items.map(x => x.id === item.id ? { ...x, title: e.target.value } : x))}
+            placeholder="항목 제목" style={{ ...S.inp, flex: 2 }} />
+          <input value={item.note} onChange={e => onChange(items.map(x => x.id === item.id ? { ...x, note: e.target.value } : x))}
+            placeholder="메모 (선택)" style={{ ...S.inp, flex: 1, fontSize: 11 }} />
+          <button style={{ ...S.mini, padding: "4px 6px" }} onClick={() => idx > 0 && move(idx, idx - 1)}>↑</button>
+          <button style={{ ...S.mini, padding: "4px 6px" }} onClick={() => idx < items.length - 1 && move(idx, idx + 1)}>↓</button>
+          <button style={S.del} onClick={() => onChange(items.filter(x => x.id !== item.id))}>×</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="새 항목 추가..."
+          style={{ ...S.inp, flex: 1 }} onKeyDown={e => { if (e.key === "Enter" && newTitle.trim()) { onChange([...items, { ...emptyTocItem(), title: newTitle }]); setNewTitle(""); } }} />
+        <button style={S.btn} onClick={() => { if (!newTitle.trim()) return; onChange([...items, { ...emptyTocItem(), title: newTitle }]); setNewTitle(""); }}>+ 추가</button>
+      </div>
+      {items.length > 1 && <div style={{ fontSize: 10, color: "#bbb", marginTop: 6 }}>⠿ 드래그하거나 ↑↓ 버튼으로 순서 변경</div>}
+    </div>
+  );
+}
+
+// ── Production section per TOC item ──────────────────────
+function ProductionSection({ tocItem, section = {}, onChange }) {
+  const upd = (k, v) => onChange({ ...section, tocId: tocItem.id, [k]: v });
+  const pages    = section.pages    || "";
+  const printM   = section.printMethod || "";
+  const paper    = section.paper    || "";
+  const binding  = section.binding  || "";
+  const notes    = section.notes    || [];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 4 }}>
+      <div>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>페이지</div>
+        <input value={pages} onChange={e => upd("pages", e.target.value)} placeholder="예: p.1–12" style={S.inp} />
+      </div>
+      <div>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>프린트 방법</div>
+        <input value={printM} onChange={e => upd("printMethod", e.target.value)} placeholder="예: 리소, 오프셋, 디지털" style={S.inp} />
+      </div>
+      <div>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>종이 / 평량</div>
+        <input value={paper} onChange={e => upd("paper", e.target.value)} placeholder="예: 모조지 120g" style={S.inp} />
+      </div>
+      <div>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>바인딩</div>
+        <input value={binding} onChange={e => upd("binding", e.target.value)} placeholder="예: 중철, 무선" style={S.inp} />
+      </div>
+      <div style={{ gridColumn: "1 / -1" }}>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>메모</div>
+        <DatedLog log={notes} onAdd={e => upd("notes", [...notes, e])} onDelete={id => upd("notes", notes.filter(n => n.id !== id))} placeholder="섹션 메모..." />
+      </div>
+    </div>
+  );
+}
+
+// ── 인쇄 ──────────────────────────────────────────────────
+const MOCKUP_OPTIONS = ["목업 없음", "1차 목업", "2차 목업", "3차 목업", "4차 목업", "5차 목업", "최종"];
+
+function PrintJobs({ jobs = [], onChange, onAddToFinance, cards }) {
+  const [adding, setAdding] = useState(false);
+  const emptyForm = () => ({ mockup: "목업 없음", pages: "", content: "", vendor: "", cost: "", payMethod: "card", cardId: cards[0]?.id || "", date: todayISO(), memo: "" });
+  const [form, setForm] = useState(emptyForm());
+
+  const add = () => {
+    if (!form.vendor) return;
+    const job = { id: uid(), ...form, cost: Number(form.cost), addedToFinance: false };
+    onChange([...jobs, job]);
+    onAddToFinance(job);
+    setForm(emptyForm());
+    setAdding(false);
+  };
+
+  const payLabel = (job) => {
+    if (job.payMethod === "cash") return "현금";
+    if (job.payMethod === "other") return "기타";
+    const c = cards.find(c => c.id === job.cardId);
+    return c ? c.name : "카드";
+  };
+
+  return (
+    <div>
+      {jobs.map(job => (
+        <div key={job.id} style={{ ...S.card, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                {job.mockup !== "목업 없음" && <span style={{ fontSize: 10, background: "#e8e3dc", padding: "2px 8px", borderRadius: 2 }}>{job.mockup}</span>}
+                <span style={{ fontSize: 14 }}>{job.vendor}</span>
+              </div>
+              {job.pages && <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>pp. {job.pages}{job.content ? ` — ${job.content}` : ""}</div>}
+              <div style={{ fontSize: 11, color: "#bbb", marginTop: 2 }}>{job.date} · {payLabel(job)}{job.memo ? ` · ${job.memo}` : ""}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {job.cost > 0 && <span style={{ fontSize: 15, color: "#c0392b" }}>₩{Number(job.cost).toLocaleString()}</span>}
+              {job.addedToFinance && <span style={{ fontSize: 10, color: "#27ae60" }}>✓ 회계</span>}
+              <button style={S.del} onClick={() => onChange(jobs.filter(j => j.id !== job.id))}>×</button>
+            </div>
+          </div>
+        </div>
+      ))}
+      {adding ? (
+        <div style={S.card}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>목업 #</div>
+              <select value={form.mockup} onChange={e => setForm({ ...form, mockup: e.target.value })} style={S.inp}>
+                {MOCKUP_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>페이지</div>
+              <input value={form.pages} onChange={e => setForm({ ...form, pages: e.target.value })} placeholder="예: 1–24" style={S.inp} />
+            </div>
+            <div style={{ gridColumn: "1/-1" }}>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>문서 내용</div>
+              <input value={form.content} onChange={e => setForm({ ...form, content: e.target.value })} placeholder="표지, 본문, 속지..." style={S.inp} />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>인쇄소 *</div>
+              <input value={form.vendor} onChange={e => setForm({ ...form, vendor: e.target.value })} placeholder="인쇄소 이름" style={S.inp} autoFocus />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>비용 (₩)</div>
+              <input type="number" value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} style={S.inp} />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>지급 수단</div>
+              <select value={form.payMethod} onChange={e => setForm({ ...form, payMethod: e.target.value })} style={S.inp}>
+                <option value="card">카드</option>
+                <option value="cash">현금</option>
+                <option value="other">기타</option>
+              </select>
+            </div>
+            {form.payMethod === "card" && (
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>카드</div>
+                <select value={form.cardId} onChange={e => setForm({ ...form, cardId: e.target.value })} style={S.inp}>
+                  {cards.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+            )}
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>날짜</div>
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} style={S.inp} />
+            </div>
+            <div style={{ gridColumn: "1/-1" }}>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>메모</div>
+              <input value={form.memo} onChange={e => setForm({ ...form, memo: e.target.value })} style={S.inp} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button style={S.btn} onClick={add}>추가 + 회계 등록</button>
+            <button style={S.sec} onClick={() => setAdding(false)}>취소</button>
+          </div>
+        </div>
+      ) : (
+        <button style={S.sec} onClick={() => setAdding(true)}>+ 인쇄 추가</button>
+      )}
+    </div>
+  );
+}
+
+// ── Materials checklist ────────────────────────────────────
+function MaterialsList({ items = [], onChange, onAddToFinance, cards }) {
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: "", vendor: "", option: "", qty: "", price: "", link: "", memo: "" });
+  const [payPopup, setPayPopup] = useState(null); // { itemId }
+  const [payForm, setPayForm] = useState({ payMethod: "card", cardId: "", receipt: null });
+  const payReceiptRef = useRef();
+
+  const add = () => {
+    if (!form.name) return;
+    onChange([...items, { id: uid(), ...form, qty: Number(form.qty), price: Number(form.price), done: false, addedToFinance: false }]);
+    setForm({ name: "", vendor: "", option: "", qty: "", price: "", link: "", memo: "" });
+    setAdding(false);
+  };
+
+  const handleCheck = (item) => {
+    if (!item.done) {
+      // opening: show payment popup
+      setPayForm({ payMethod: "card", cardId: cards[0]?.id || "", receipt: null });
+      setPayPopup({ itemId: item.id });
+    } else {
+      // uncheck: just toggle back
+      onChange(items.map(x => x.id === item.id ? { ...x, done: false } : x));
+    }
+  };
+
+  const confirmPay = () => {
+    const item = items.find(x => x.id === payPopup.itemId);
+    if (!item) return;
+    const updated = { ...item, done: true, addedToFinance: item.price > 0, payMethod: payForm.payMethod, cardId: payForm.cardId, receipt: payForm.receipt };
+    onChange(items.map(x => x.id === item.id ? updated : x));
+    if (item.price > 0) onAddToFinance({ ...updated, receipt: payForm.receipt });
+    setPayPopup(null);
+  };
+
+  const payLabel = (item) => {
+    if (!item.done) return null;
+    if (item.payMethod === "cash") return "현금";
+    if (item.payMethod === "other") return "기타";
+    const c = cards.find(c => c.id === item.cardId);
+    return c ? c.name : "카드";
+  };
+
+  return (
+    <div>
+      {/* Payment popup */}
+      {payPopup && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#fff", borderRadius: 4, padding: 24, width: 320, maxWidth: "90vw", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}>
+            <div style={{ fontSize: 14, marginBottom: 16, fontFamily: "Georgia,serif" }}>
+              구매 완료 — 지급 수단 선택
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>결제 수단</div>
+              <select value={payForm.payMethod} onChange={e => setPayForm(f => ({ ...f, payMethod: e.target.value }))} style={S.inp}>
+                <option value="card">카드</option>
+                <option value="cash">현금</option>
+                <option value="other">기타</option>
+              </select>
+            </div>
+            {payForm.payMethod === "card" && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>카드 선택</div>
+                <select value={payForm.cardId} onChange={e => setPayForm(f => ({ ...f, cardId: e.target.value }))} style={S.inp}>
+                  {cards.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+            )}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>영수증 (선택)</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <label style={{ ...S.sec, cursor: "pointer", fontSize: 11 }}>
+                  📷 사진 첨부
+                  <input ref={payReceiptRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+                    onChange={e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => setPayForm(pf => ({ ...pf, receipt: ev.target.result })); r.readAsDataURL(f); e.target.value = ""; }} />
+                </label>
+                {payForm.receipt && <span style={{ fontSize: 11, color: "#27ae60" }}>✓ 첨부됨</span>}
+              </div>
+              {payForm.receipt && <img src={payForm.receipt} alt="영수증" style={{ width: "100%", maxHeight: 120, objectFit: "contain", marginTop: 8, border: "1px solid #e8e3dc", borderRadius: 2 }} />}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={S.btn} onClick={confirmPay}>확인 + 회계 등록</button>
+              <button style={S.sec} onClick={() => setPayPopup(null)}>취소</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {items.map(item => (
+        <div key={item.id} style={{ ...S.card, marginBottom: 6, opacity: item.done ? 0.6 : 1 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <input type="checkbox" checked={item.done} onChange={() => handleCheck(item)} style={{ marginTop: 4, cursor: "pointer", width: 16, height: 16, flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 14, textDecoration: item.done ? "line-through" : "none" }}>{item.name}</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {item.price > 0 && <span style={{ fontSize: 13, color: item.done ? "#27ae60" : "#c0392b" }}>₩{Number(item.price).toLocaleString()}</span>}
+                  {item.addedToFinance && <span style={{ fontSize: 10, color: "#27ae60" }}>✓ 회계</span>}
+                  <button style={S.del} onClick={() => onChange(items.filter(x => x.id !== item.id))}>×</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: "#bbb", marginTop: 3, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {item.vendor && <span>구매처: {item.vendor}</span>}
+                {item.option && <span>· {item.option}</span>}
+                {item.qty > 0 && <span>· 수량 {item.qty}</span>}
+                {item.done && payLabel(item) && <span>· {payLabel(item)}</span>}
+                {item.memo && <span>· {item.memo}</span>}
+              </div>
+              {item.link && <a href={item.link} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#2980b9", display: "block", marginTop: 3 }}>{item.link}</a>}
+              {item.receipt && <img src={item.receipt} alt="영수증" style={{ width: "100%", maxHeight: 120, objectFit: "contain", marginTop: 8, border: "1px solid #e8e3dc", borderRadius: 2 }} />}
+            </div>
+          </div>
+        </div>
+      ))}
+      {adding ? (
+        <div style={S.card}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ gridColumn: "1/-1" }}><div style={{ ...S.lbl, marginBottom: 4 }}>재료명 *</div><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="재료 이름" style={S.inp} autoFocus /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>구매처</div><input value={form.vendor} onChange={e => setForm({ ...form, vendor: e.target.value })} placeholder="쿠팡, 알리..." style={S.inp} /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>선택사항</div><input value={form.option} onChange={e => setForm({ ...form, option: e.target.value })} placeholder="색상, 사이즈..." style={S.inp} /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>수량</div><input type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} style={S.inp} /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>가격 (₩)</div><input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} style={S.inp} /></div>
+            <div style={{ gridColumn: "1/-1" }}><div style={{ ...S.lbl, marginBottom: 4 }}>구매 링크</div><input value={form.link} onChange={e => setForm({ ...form, link: e.target.value })} placeholder="https://..." style={S.inp} /></div>
+            <div style={{ gridColumn: "1/-1" }}><div style={{ ...S.lbl, marginBottom: 4 }}>메모</div><input value={form.memo} onChange={e => setForm({ ...form, memo: e.target.value })} style={S.inp} /></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button style={S.btn} onClick={add}>추가</button>
+            <button style={S.sec} onClick={() => setAdding(false)}>취소</button>
+          </div>
+        </div>
+      ) : (
+        <button style={S.sec} onClick={() => setAdding(true)}>+ 재료 추가</button>
+      )}
+    </div>
+  );
+}
+
+// ── shared payment fields (재사용) ────────────────────────
+function PaymentFields({ form, setForm, cards, setCards }) {
+  const [addingCard, setAddingCard] = useState(false);
+  const [newCardName, setNewCardName] = useState("");
+
+  return (
+    <>
+      <div>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>결제수단</div>
+        <select value={form.payMethod} onChange={e => setForm(f => ({ ...f, payMethod: e.target.value }))} style={S.inp}>
+          <option value="card">카드</option>
+          <option value="cash">현금</option>
+          <option value="other">기타</option>
+        </select>
+      </div>
+      {form.payMethod === "card" && (
+        <div>
+          <div style={{ ...S.lbl, marginBottom: 4 }}>카드</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <select value={form.cardId} onChange={e => setForm(f => ({ ...f, cardId: e.target.value }))} style={{ ...S.inp, flex: 1 }}>
+              {cards.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <button style={{ ...S.mini, flexShrink: 0 }} onClick={() => setAddingCard(a => !a)}>+ 카드</button>
+          </div>
+          {addingCard && (
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              <input value={newCardName} onChange={e => setNewCardName(e.target.value)} placeholder="카드 이름" style={{ ...S.inp, flex: 1 }}
+                onKeyDown={e => { if (e.key === "Enter" && newCardName.trim()) { const nc = { id: uid(), name: newCardName }; setCards(cs => [...cs, nc]); setForm(f => ({ ...f, cardId: nc.id })); setNewCardName(""); setAddingCard(false); } }} />
+              <button style={S.btn} onClick={() => { if (!newCardName.trim()) return; const nc = { id: uid(), name: newCardName }; setCards(cs => [...cs, nc]); setForm(f => ({ ...f, cardId: nc.id })); setNewCardName(""); setAddingCard(false); }}>추가</button>
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ gridColumn: "1/-1" }}>
+        <div style={{ ...S.lbl, marginBottom: 4 }}>영수증</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label style={{ ...S.sec, cursor: "pointer", fontSize: 11 }}>
+            📷 첨부
+            <input type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+              onChange={e => { const f2 = e.target.files[0]; if (!f2) return; const r = new FileReader(); r.onload = ev => setForm(f => ({ ...f, receipt: ev.target.result })); r.readAsDataURL(f2); e.target.value = ""; }} />
+          </label>
+          {form.receipt && <><span style={{ fontSize: 11, color: "#27ae60" }}>✓ 첨부됨</span><button style={{ ...S.del, fontSize: 13 }} onClick={() => setForm(f => ({ ...f, receipt: null }))}>×</button></>}
+        </div>
+        {form.receipt && <img src={form.receipt} alt="영수증" style={{ width: "100%", maxHeight: 120, objectFit: "contain", marginTop: 6, border: "1px solid #e8e3dc", borderRadius: 2 }} />}
+      </div>
+    </>
+  );
+}
+
+// ── Book Finance ───────────────────────────────────────────
+function BookFinance({ book, updateBook, cards, setCards }) {
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ type: "expense", category: "", amount: "", date: todayISO(), memo: "", payMethod: "card", cardId: cards[0]?.id || "", receipt: null });
+
+  const inc = book.finance.filter(f => f.type === "income").reduce((s, f) => s + Number(f.amount), 0);
+  const exp = book.finance.filter(f => f.type === "expense").reduce((s, f) => s + Number(f.amount), 0);
+
+  const addReceipt = (e, itemId) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => updateBook({ ...book, finance: book.finance.map(f => f.id === itemId ? { ...f, receipt: ev.target.result } : f) });
+    reader.readAsDataURL(file); e.target.value = "";
+  };
+
+  const add = () => {
+    if (!form.category || !form.amount) return;
+    updateBook({ ...book, finance: [...book.finance, { id: uid(), ...form, amount: Number(form.amount) }] });
+    setForm({ type: "expense", category: "", amount: "", date: todayISO(), memo: "", payMethod: "card", cardId: cards[0]?.id || "", receipt: null });
+    setAdding(false);
+  };
+
+  const payLabel = (item) => {
+    if (item.payMethod === "cash") return "현금";
+    if (item.payMethod === "other") return "기타";
+    const c = cards.find(c => c.id === item.cardId);
+    return c ? c.name : "";
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        {[["수입", inc, "#27ae60"], ["지출", exp, "#c0392b"], ["순이익", inc - exp, inc - exp >= 0 ? "#27ae60" : "#c0392b"]].map(([l, v, c]) => (
+          <div key={l} style={{ ...S.card, flex: 1, textAlign: "center", marginBottom: 0 }}>
+            <div style={{ ...S.lbl, marginBottom: 6 }}>{l}</div>
+            <div style={{ fontSize: 18, color: c }}>₩{v.toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <button style={S.btn} onClick={() => setAdding(true)}>+ 내역 추가</button>
+      </div>
+      {adding && (
+        <div style={S.card}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>유형</div>
+              <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} style={S.inp}>
+                <option value="income">수입</option><option value="expense">지출</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>카테고리</div>
+              <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} placeholder="인쇄비, 재료비..." style={S.inp} />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>금액 (₩)</div>
+              <input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} style={S.inp} />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>날짜</div>
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} style={S.inp} />
+            </div>
+            {form.type === "expense" && (
+              <PaymentFields form={form} setForm={setForm} cards={cards} setCards={setCards} />
+            )}
+            <div style={{ gridColumn: "1/-1" }}>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>메모</div>
+              <input value={form.memo} onChange={e => setForm({ ...form, memo: e.target.value })} style={S.inp} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button style={S.btn} onClick={add}>추가</button>
+            <button style={S.sec} onClick={() => setAdding(false)}>취소</button>
+          </div>
+        </div>
+      )}
+      {[...book.finance].reverse().map(item => (
+        <div key={item.id} style={{ ...S.card, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 10, padding: "2px 8px", background: item.type === "income" ? "#27ae60" : "#c0392b", color: "#fff" }}>{item.type === "income" ? "수입" : "지출"}</span>
+                <span style={{ fontSize: 13 }}>{item.category}</span>
+                {item.autoAdded && <span style={{ fontSize: 10, color: "#bbb", border: "1px solid #e8e3dc", padding: "1px 6px" }}>자동</span>}
+              </div>
+              <div style={{ fontSize: 11, color: "#bbb", marginTop: 4 }}>
+                {item.date}{item.memo ? ` — ${item.memo}` : ""}{payLabel(item) ? ` · ${payLabel(item)}` : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: 15, color: item.type === "income" ? "#27ae60" : "#c0392b" }}>{item.type === "income" ? "+" : "-"}₩{Number(item.amount).toLocaleString()}</div>
+              <label style={{ ...S.mini, cursor: "pointer" }}>
+                {item.receipt ? "📷" : "영수증"}
+                <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => addReceipt(e, item.id)} />
+              </label>
+              <button style={S.del} onClick={() => updateBook({ ...book, finance: book.finance.filter(f => f.id !== item.id) })}>×</button>
+            </div>
+          </div>
+          {item.receipt && <img src={item.receipt} alt="영수증" style={{ width: "100%", maxHeight: 200, objectFit: "contain", marginTop: 10, border: "1px solid #e8e3dc", borderRadius: 2 }} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Book Inventory ─────────────────────────────────────────
+function BookInventory({ book, updateBook }) {
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ store: "", copies: "", commission: 30, date: todayISO(), memo: "" });
+  const [addingSettlement, setAddingSettlement] = useState(null); // itemId
+  const [settlForm, setSettlForm] = useState({ date: todayISO(), payer: "", amount: "" });
+
+  const add = () => {
+    if (!form.store) return;
+    updateBook({ ...book, inventory: [...book.inventory, { id: uid(), ...form, copies: Number(form.copies), settlements: [] }] });
+    setForm({ store: "", copies: "", commission: 30, date: todayISO(), memo: "" });
+    setAdding(false);
+  };
+
+  const addSettlement = (itemId) => {
+    if (!settlForm.amount) return;
+    const settlement = { id: uid(), date: settlForm.date, payer: settlForm.payer, amount: Number(settlForm.amount) };
+    // add to inventory settlements
+    const updatedInv = book.inventory.map(x =>
+      x.id === itemId ? { ...x, settlements: [...(x.settlements || []), settlement] } : x
+    );
+    // add to finance as income
+    const store = book.inventory.find(x => x.id === itemId)?.store || "";
+    const financeEntry = {
+      id: uid(), type: "income", category: "판매 정산",
+      amount: settlement.amount, date: settlement.date,
+      memo: `정산: ${store}${settlement.payer ? ` (${settlement.payer})` : ""}`,
+      autoAdded: true,
+    };
+    updateBook({ ...book, inventory: updatedInv, finance: [...book.finance, financeEntry] });
+    setSettlForm({ date: todayISO(), payer: "", amount: "" });
+    setAddingSettlement(null);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <button style={S.btn} onClick={() => setAdding(true)}>+ 입고 기록</button>
+      </div>
+      {adding && (
+        <div style={S.card}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ gridColumn: "1/-1" }}><div style={{ ...S.lbl, marginBottom: 4 }}>서점명</div><input value={form.store} onChange={e => setForm({ ...form, store: e.target.value })} style={S.inp} autoFocus /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>권수</div><input type="number" value={form.copies} onChange={e => setForm({ ...form, copies: e.target.value })} style={S.inp} /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>수수료 %</div><input type="number" value={form.commission} onChange={e => setForm({ ...form, commission: e.target.value })} style={S.inp} /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>날짜</div><input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} style={S.inp} /></div>
+            <div><div style={{ ...S.lbl, marginBottom: 4 }}>메모</div><input value={form.memo} onChange={e => setForm({ ...form, memo: e.target.value })} style={S.inp} /></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button style={S.btn} onClick={add}>추가</button>
+            <button style={S.sec} onClick={() => setAdding(false)}>취소</button>
+          </div>
+        </div>
+      )}
+      {book.inventory.map(item => (
+        <div key={item.id} style={{ ...S.card, marginBottom: 10 }}>
+          {/* 서점 헤더 */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: 15 }}>{item.store}</div>
+              <div style={{ fontSize: 11, color: "#bbb", marginTop: 3 }}>{item.date}{item.memo ? ` — ${item.memo}` : ""}</div>
+            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 20 }}>{item.copies}<span style={{ fontSize: 11, color: "#999" }}>권</span></div>
+                <div style={{ fontSize: 11, color: "#999" }}>수수료 {item.commission}%</div>
+              </div>
+              <button style={S.del} onClick={() => updateBook({ ...book, inventory: book.inventory.filter(x => x.id !== item.id) })}>×</button>
+            </div>
+          </div>
+
+          {/* 권수 수정 */}
+          <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+            <input type="number" value={item.copies}
+              onChange={e => updateBook({ ...book, inventory: book.inventory.map(x => x.id === item.id ? { ...x, copies: Number(e.target.value) } : x) })}
+              style={{ ...S.inp, width: 70 }} />
+            <span style={{ fontSize: 11, color: "#999" }}>권수 수정</span>
+          </div>
+
+          {/* 정산 내역 */}
+          <div style={{ marginTop: 14, borderTop: "1px solid #f0ece6", paddingTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ ...S.lbl }}>정산 내역</div>
+              <button style={S.mini} onClick={() => { setAddingSettlement(item.id); setSettlForm({ date: todayISO(), payer: "", amount: "" }); }}>+ 정산 추가</button>
+            </div>
+
+            {addingSettlement === item.id && (
+              <div style={{ background: "#faf8f5", border: "1px solid #e8e3dc", borderRadius: 2, padding: "12px", marginBottom: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                  <div><div style={{ ...S.lbl, marginBottom: 4, fontSize: 9 }}>날짜</div><input type="date" value={settlForm.date} onChange={e => setSettlForm(f => ({ ...f, date: e.target.value }))} style={S.inp} /></div>
+                  <div><div style={{ ...S.lbl, marginBottom: 4, fontSize: 9 }}>입금자명</div><input value={settlForm.payer} onChange={e => setSettlForm(f => ({ ...f, payer: e.target.value }))} placeholder="서점명 또는 담당자" style={S.inp} /></div>
+                  <div><div style={{ ...S.lbl, marginBottom: 4, fontSize: 9 }}>금액 (₩)</div><input type="number" value={settlForm.amount} onChange={e => setSettlForm(f => ({ ...f, amount: e.target.value }))} style={S.inp} /></div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button style={S.btn} onClick={() => addSettlement(item.id)}>추가 + 회계 수입 등록</button>
+                  <button style={S.sec} onClick={() => setAddingSettlement(null)}>취소</button>
+                </div>
+              </div>
+            )}
+
+            {(item.settlements || []).length === 0 && addingSettlement !== item.id && (
+              <div style={{ fontSize: 11, color: "#ccc" }}>정산 내역 없음</div>
+            )}
+            {(item.settlements || []).map(s => (
+              <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #f5f2ed" }}>
+                <div style={{ fontSize: 11, color: "#888" }}>
+                  {s.date}{s.payer ? ` — ${s.payer}` : ""}
+                  <span style={{ fontSize: 10, color: "#bbb", marginLeft: 8 }}>✓ 회계 등록</span>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 14, color: "#27ae60" }}>+₩{Number(s.amount).toLocaleString()}</span>
+                  <button style={{ ...S.del, fontSize: 14 }} onClick={() => {
+                    updateBook({ ...book, inventory: book.inventory.map(x => x.id === item.id ? { ...x, settlements: (x.settlements || []).filter(st => st.id !== s.id) } : x) });
+                  }}>×</button>
+                </div>
+              </div>
+            ))}
+            {(item.settlements || []).length > 0 && (
+              <div style={{ fontSize: 11, color: "#27ae60", marginTop: 6, textAlign: "right" }}>
+                총 정산: ₩{(item.settlements || []).reduce((s, x) => s + Number(x.amount), 0).toLocaleString()}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Final Binding (최종 제책) ──────────────────────────────
+const emptyBodySection = () => ({
+  id: uid(), label: "",
+  pages: "", driveLink: "", paper: "", printer: "", printMethod: "",
+  trimSize: "", workSize: "", memo: "",
+});
+
+function FinalBinding({ book, updateBook }) {
+  const fb = book.finalBinding || {};
+  const upd = (k, v) => updateBook({ ...book, finalBinding: { ...fb, [k]: v } });
+  const bodySections = fb.bodySections || [];
+  const updBody = (sections) => upd("bodySections", sections);
+  const updBodyItem = (id, key, val) =>
+    updBody(bodySections.map(s => s.id === id ? { ...s, [key]: val } : s));
+
+  return (
+    <div>
+      <div style={{ ...S.lbl, marginBottom: 16 }}>최종 제책 사양</div>
+      <Field label="최종 판형 / 사이즈">
+        <input value={fb.finalFormat || ""} onChange={e => upd("finalFormat", e.target.value)} placeholder="예: A5 (148×210mm)" style={S.inp} />
+      </Field>
+      <Field label="최종 페이지 수">
+        <input value={fb.finalPages || ""} onChange={e => upd("finalPages", e.target.value)} placeholder="예: 48p (표지 포함)" style={S.inp} />
+      </Field>
+      <Field label="바인딩 방식">
+        <input value={fb.bindingMethod || ""} onChange={e => upd("bindingMethod", e.target.value)} placeholder="예: 중철, 무선, 양장, 콥스, 리소..." style={S.inp} />
+      </Field>
+
+      {/* ── 표지 ── */}
+      <Field label="표지">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>종이</div>
+            <input value={fb.coverPaper || ""} onChange={e => upd("coverPaper", e.target.value)} placeholder="예: 아트지 250g" style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>인쇄 방식</div>
+            <input value={fb.coverPrint || ""} onChange={e => upd("coverPrint", e.target.value)} placeholder="예: 디지털 4도" style={S.inp} />
+          </div>
+          <div style={{ gridColumn: "1/-1" }}>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>후가공</div>
+            <input value={fb.coverFinish || ""} onChange={e => upd("coverFinish", e.target.value)} placeholder="예: 무광 코팅, 형압, 없음..." style={S.inp} />
+          </div>
+          <div style={{ gridColumn: "1/-1" }}>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>Google Drive 링크</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                value={fb.coverDriveLink || ""}
+                onChange={e => upd("coverDriveLink", e.target.value)}
+                placeholder="https://drive.google.com/..."
+                style={{ ...S.inp, flex: 1 }}
+              />
+              {fb.coverDriveLink && (
+                <a href={fb.coverDriveLink} target="_blank" rel="noreferrer"
+                  style={{ ...S.mini, textDecoration: "none", color: "#2980b9", whiteSpace: "nowrap", flexShrink: 0 }}>
+                  열기 ↗
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      </Field>
+
+      {/* ── 본문 (복수 항목) ── */}
+      <div style={S.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={S.lbl}>본문</div>
+          <button style={S.sec} onClick={() => updBody([...bodySections, emptyBodySection()])}>+ 본문 추가</button>
+        </div>
+
+        {bodySections.length === 0 && (
+          <div style={{ fontSize: 12, color: "#bbb" }}>+ 본문 추가 버튼으로 파일 섹션을 추가하세요.</div>
+        )}
+
+        {bodySections.map((sec, idx) => (
+          <div key={sec.id} style={{ border: "1px solid #e8e3dc", borderRadius: 2, padding: "14px 16px", marginBottom: 12, background: "#faf8f5" }}>
+            {/* 헤더 */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flex: 1 }}>
+                <span style={{ fontSize: 11, color: "#bbb", flexShrink: 0 }}>본문 {idx + 1}</span>
+                <input
+                  value={sec.label}
+                  onChange={e => updBodyItem(sec.id, "label", e.target.value)}
+                  placeholder="섹션 이름 (예: 본문, 속지, 인서트...)"
+                  style={{ ...S.inp, fontSize: 13, background: "transparent", border: "none", borderBottom: "1px solid #d4cfc8", borderRadius: 0, padding: "4px 0" }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0, marginLeft: 8 }}>
+                {idx > 0 && <button style={S.mini} onClick={() => { const a = [...bodySections]; [a[idx-1], a[idx]] = [a[idx], a[idx-1]]; updBody(a); }}>↑</button>}
+                {idx < bodySections.length - 1 && <button style={S.mini} onClick={() => { const a = [...bodySections]; [a[idx], a[idx+1]] = [a[idx+1], a[idx]]; updBody(a); }}>↓</button>}
+                <button style={S.del} onClick={() => updBody(bodySections.filter(s => s.id !== sec.id))}>×</button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>페이지</div>
+                <input value={sec.pages} onChange={e => updBodyItem(sec.id, "pages", e.target.value)} placeholder="예: p.1–24" style={S.inp} />
+              </div>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>인쇄소</div>
+                <input value={sec.printer} onChange={e => updBodyItem(sec.id, "printer", e.target.value)} placeholder="예: 신화인쇄" style={S.inp} />
+              </div>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>종이 / 평량</div>
+                <input value={sec.paper} onChange={e => updBodyItem(sec.id, "paper", e.target.value)} placeholder="예: 미색 모조지 80g" style={S.inp} />
+              </div>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>인쇄 방식</div>
+                <input value={sec.printMethod} onChange={e => updBodyItem(sec.id, "printMethod", e.target.value)} placeholder="예: 리소 흑백, 디지털 2도" style={S.inp} />
+              </div>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>제단 사이즈</div>
+                <input value={sec.trimSize} onChange={e => updBodyItem(sec.id, "trimSize", e.target.value)} placeholder="예: 148×210mm" style={S.inp} />
+              </div>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>작업 사이즈</div>
+                <input value={sec.workSize} onChange={e => updBodyItem(sec.id, "workSize", e.target.value)} placeholder="예: 154×216mm (+3mm)" style={S.inp} />
+              </div>
+              <div style={{ gridColumn: "1/-1" }}>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>Google Drive 링크</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    value={sec.driveLink}
+                    onChange={e => updBodyItem(sec.id, "driveLink", e.target.value)}
+                    placeholder="https://drive.google.com/..."
+                    style={{ ...S.inp, flex: 1 }}
+                  />
+                  {sec.driveLink && (
+                    <a href={sec.driveLink} target="_blank" rel="noreferrer"
+                      style={{ ...S.mini, textDecoration: "none", color: "#2980b9", whiteSpace: "nowrap", flexShrink: 0 }}>
+                      열기 ↗
+                    </a>
+                  )}
+                </div>
+              </div>
+              <div style={{ gridColumn: "1/-1" }}>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>특이 사항 메모</div>
+                <input value={sec.memo} onChange={e => updBodyItem(sec.id, "memo", e.target.value)} placeholder="별색, 도무송, 특수 후가공 등..." style={S.inp} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Field label="특수 사항 / 부속물">
+        <textarea value={fb.special || ""} onChange={e => upd("special", e.target.value)} placeholder="예: 리소 별색 인서트, 엽서 동봉, 스티커 포함..." style={{ ...S.inp, minHeight: 72, resize: "vertical" }} />
+      </Field>
+      <Field label="인쇄소 / 제책소">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>인쇄소</div>
+            <input value={fb.printer || ""} onChange={e => upd("printer", e.target.value)} style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>제책소</div>
+            <input value={fb.bindery || ""} onChange={e => upd("bindery", e.target.value)} style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>최종 인쇄 부수</div>
+            <input value={fb.finalEdition || ""} onChange={e => upd("finalEdition", e.target.value)} placeholder="예: 100부" style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>최종 납품일</div>
+            <input type="date" value={fb.deliveryDate || ""} onChange={e => upd("deliveryDate", e.target.value)} style={S.inp} />
+          </div>
+        </div>
+      </Field>
+      <Field label="최종 단가 / 정가">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>제작 단가 (₩)</div>
+            <input type="number" value={fb.unitCost || ""} onChange={e => upd("unitCost", e.target.value)} style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>판매 정가 (₩)</div>
+            <input type="number" value={fb.retailPrice || ""} onChange={e => upd("retailPrice", e.target.value)} style={S.inp} />
+          </div>
+        </div>
+        {fb.unitCost && fb.retailPrice && (
+          <div style={{ marginTop: 10, padding: "8px 12px", background: "#faf8f5", borderRadius: 2, fontSize: 12, color: "#555" }}>
+            마진율: {Math.round((1 - fb.unitCost / fb.retailPrice) * 100)}% &nbsp;·&nbsp;
+            손익분기: {fb.finalEdition ? Math.ceil(fb.unitCost * Number(fb.finalEdition) / fb.retailPrice) + "권" : "—"}
+          </div>
+        )}
+      </Field>
+      <Field label="사진 / 교정지">
+        <PhotoUpload photos={fb.photos || []} onChange={v => upd("photos", v)} />
+      </Field>
+      <Field label="제책 메모">
+        <DatedLog
+          log={fb.memoLog || []}
+          onAdd={e => upd("memoLog", [...(fb.memoLog || []), e])}
+          onDelete={id => upd("memoLog", (fb.memoLog || []).filter(m => m.id !== id))}
+          placeholder="제책 관련 메모..."
+        />
+      </Field>
+    </div>
+  );
+}
+
+// ── Publisher Plan (상위 기획서) ───────────────────────────
+function PublisherPlan({ books, calEvents, googleEvents }) {
+  const [gdLoading, setGdLoading] = useState(false);
+  const [gdResult, setGdResult] = useState(null);
+  const [fairForm, setFairForm] = useState({
+    fairName: "", fairDate: "", deadline: "", booth: "", applicantName: "studio v.l.t.",
+    contact: "", website: "", concept: "", books: "", specialReq: "",
+  });
+  const [fairSubmitted, setFairSubmitted] = useState(false);
+
+  const upcomingFairs = [...(calEvents || []), ...(googleEvents || [])]
+    .filter(e => (e.type === "fair" || e.type === "fair_apply" || e.title?.toLowerCase().includes("페어") || e.title?.toLowerCase().includes("fair")) && e.date >= todayISO())
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 6);
+
+  const fetchGdrive = async () => {
+    setGdLoading(true);
+    setGdResult(null);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: "You are a Google Drive assistant. List recent files from Google Drive. Return a JSON array of objects with keys: name, mimeType, modifiedTime, webViewLink. Return ONLY the JSON array, no other text.",
+          messages: [{ role: "user", content: "List the 8 most recently modified files in my Google Drive related to publishing, books, 출판, 기획, or any document files." }],
+          mcp_servers: [{ type: "url", url: "https://drivemcp.googleapis.com/mcp/v1", name: "google-drive" }]
+        })
+      });
+      const data = await res.json();
+      const textBlock = data.content?.find(b => b.type === "text");
+      const toolResult = data.content?.find(b => b.type === "mcp_tool_result");
+      let files = [];
+      const raw = toolResult?.content?.[0]?.text || textBlock?.text || "[]";
+      try { files = JSON.parse(raw.replace(/```json|```/g, "").trim()); } catch { files = []; }
+      setGdResult(files);
+    } catch (e) { setGdResult([]); }
+    setGdLoading(false);
+  };
+
+  return (
+    <div>
+      <div style={{ ...S.lbl, marginBottom: 20 }}>Publisher Plan — studio v.l.t.</div>
+
+      {/* Overview stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 24 }}>
+        {[
+          ["총 프로젝트", books.length + "권"],
+          ["진행중", books.filter(b => ["Writing","Design","Print Ready","Printed"].includes(b.stage)).length + "권"],
+          ["배포중", books.filter(b => b.stage === "Distributing").length + "권"],
+        ].map(([l, v]) => (
+          <div key={l} style={{ ...S.card, textAlign: "center", marginBottom: 0 }}>
+            <div style={{ ...S.lbl, marginBottom: 6 }}>{l}</div>
+            <div style={{ fontSize: 20 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Google Drive */}
+      <Collapsible title="Google Drive — 연결된 파일" defaultOpen={false}>
+        <div style={{ marginBottom: 12 }}>
+          <button style={S.btn} onClick={fetchGdrive} disabled={gdLoading}>
+            {gdLoading ? "불러오는 중..." : "Drive 파일 불러오기"}
+          </button>
+        </div>
+        {gdResult === null && <div style={{ fontSize: 12, color: "#bbb" }}>버튼을 누르면 Google Drive에서 파일을 가져옵니다.</div>}
+        {gdResult !== null && gdResult.length === 0 && <div style={{ fontSize: 12, color: "#bbb" }}>파일을 찾지 못했어요.</div>}
+        {gdResult && gdResult.length > 0 && gdResult.map((f, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0ece6" }}>
+            <div>
+              <div style={{ fontSize: 13 }}>{f.name}</div>
+              <div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>{f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString("ko-KR") : ""} · {f.mimeType?.replace("application/vnd.google-apps.", "")}</div>
+            </div>
+            {f.webViewLink && <a href={f.webViewLink} target="_blank" rel="noreferrer" style={{ ...S.mini, textDecoration: "none", color: "#2980b9", fontSize: 10 }}>열기</a>}
+          </div>
+        ))}
+      </Collapsible>
+
+      {/* Upcoming fairs */}
+      <Collapsible title="다가오는 페어 일정" defaultOpen={true} badge={upcomingFairs.length > 0 ? upcomingFairs.length + "개" : ""}>
+        {upcomingFairs.length === 0
+          ? <div style={{ fontSize: 12, color: "#bbb" }}>캘린더에 페어 일정이 없어요.</div>
+          : upcomingFairs.map(ev => (
+            <div key={ev.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0ece6" }}>
+              <div style={{ fontSize: 11, color: "#bbb", minWidth: 84 }}>{ev.date}</div>
+              <div style={{ flex: 1, fontSize: 13 }}>{ev.title}</div>
+              {ev.source === "google" && <span style={{ fontSize: 10, color: "#4285f4" }}>Google</span>}
+            </div>
+          ))
+        }
+      </Collapsible>
+
+      {/* Fair application form */}
+      <Collapsible title="페어 참가신청서" defaultOpen={false}>
+        <div>
+          {fairSubmitted && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "8px 12px", background: "#f0faf4", border: "1px solid #b7e4c7", borderRadius: 2 }}>
+              <span style={{ fontSize: 12, color: "#27ae60" }}>✓ 저장됨</span>
+              <span style={{ fontSize: 11, color: "#888" }}>— 아래에서 바로 수정할 수 있어요</span>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            {[["페어 이름 *", "fairName", "예: 언리미티드에디션", false],
+              ["페어 날짜", "fairDate", "", true],
+              ["신청 마감일", "deadline", "", true],
+              ["부스 / 테이블", "booth", "예: 일반 테이블 1", false],
+              ["신청자명", "applicantName", "studio v.l.t.", false],
+              ["연락처", "contact", "이메일 또는 전화", false],
+              ["웹사이트/SNS", "website", "https://...", false],
+            ].map(([label, key, ph, isDate]) => (
+              <div key={key}>
+                <div style={{ ...S.lbl, marginBottom: 4 }}>{label}</div>
+                <input type={isDate ? "date" : "text"} value={fairForm[key]} placeholder={ph}
+                  onChange={e => setFairForm(f => ({ ...f, [key]: e.target.value }))} style={S.inp} />
+              </div>
+            ))}
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.lbl, marginBottom: 4 }}>출판사 / 작업 소개</div>
+            <textarea value={fairForm.concept} onChange={e => setFairForm(f => ({ ...f, concept: e.target.value }))}
+              placeholder="studio v.l.t.는..." style={{ ...S.inp, minHeight: 80, resize: "vertical" }} />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.lbl, marginBottom: 4 }}>참가 도서 목록</div>
+            <textarea value={fairForm.books} onChange={e => setFairForm(f => ({ ...f, books: e.target.value }))}
+              placeholder="fffff, olob, iphone photos trace monotype..." style={{ ...S.inp, minHeight: 60, resize: "vertical" }} />
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ ...S.lbl, marginBottom: 4 }}>특별 요청사항</div>
+            <input value={fairForm.specialReq} onChange={e => setFairForm(f => ({ ...f, specialReq: e.target.value }))}
+              placeholder="전기, 벽면, 리소 장비 반입 등..." style={S.inp} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={S.btn} onClick={() => { if (!fairForm.fairName.trim()) return; setFairSubmitted(true); }}>
+              {fairSubmitted ? "저장 (수정 완료)" : "신청서 저장"}
+            </button>
+            <button style={S.sec} onClick={() => { setFairForm({ fairName: "", fairDate: "", deadline: "", booth: "", applicantName: "studio v.l.t.", contact: "", website: "", concept: "", books: "", specialReq: "" }); setFairSubmitted(false); }}>초기화</button>
+          </div>
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+// ── Document Manager (문서 저장/공유) ─────────────────────
+function DocumentManager({ books, finance, calEvents, todos }) {
+  const [gdSaving, setGdSaving] = useState(false);
+  const [gdSaveResult, setGdSaveResult] = useState(null);
+  const [gdFilesList, setGdFilesList] = useState(null);
+  const [gdFilesLoading, setGdFilesLoading] = useState(false);
+  const [importError, setImportError] = useState(null);
+  const importRef = useRef();
+
+  const exportData = () => {
+    const data = { books, finance, calEvents, todos, exportedAt: new Date().toISOString(), version: 2 };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `studio-vlt-${todayISO()}.json`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCSV = () => {
+    const rows = [["날짜","유형","카테고리","금액","프로젝트","메모"]];
+    finance.forEach(f => {
+      const bk = books.find(b => String(b.id) === String(f.bookId));
+      rows.push([f.date, f.type === "income" ? "수입" : "지출", f.category, f.amount, bk?.title || "", f.memo || ""]);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `studio-vlt-finance-${todayISO()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const saveToGdrive = async () => {
+    setGdSaving(true);
+    setGdSaveResult(null);
+    try {
+      const data = { books, finance, calEvents, todos, exportedAt: new Date().toISOString(), version: 2 };
+      const content = JSON.stringify(data, null, 2);
+      const filename = `studio-vlt-backup-${todayISO()}.json`;
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: "You are a Google Drive assistant. Create a file in Google Drive with the given content. After creating, respond with just the webViewLink URL.",
+          messages: [{ role: "user", content: `Create a file named "${filename}" in Google Drive with this JSON content:\n${content}` }],
+          mcp_servers: [{ type: "url", url: "https://drivemcp.googleapis.com/mcp/v1", name: "google-drive" }]
+        })
+      });
+      const resData = await res.json();
+      const textBlock = resData.content?.find(b => b.type === "text");
+      setGdSaveResult({ success: true, link: textBlock?.text || "" });
+    } catch (e) { setGdSaveResult({ success: false }); }
+    setGdSaving(false);
+  };
+
+  const listGdrive = async () => {
+    setGdFilesLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: "List studio-vlt backup files from Google Drive. Return ONLY a JSON array with keys: name, modifiedTime, webViewLink.",
+          messages: [{ role: "user", content: "Find files with 'studio-vlt' in the name in Google Drive." }],
+          mcp_servers: [{ type: "url", url: "https://drivemcp.googleapis.com/mcp/v1", name: "google-drive" }]
+        })
+      });
+      const data = await res.json();
+      const textBlock = data.content?.find(b => b.type === "text");
+      const toolResult = data.content?.find(b => b.type === "mcp_tool_result");
+      const raw = toolResult?.content?.[0]?.text || textBlock?.text || "[]";
+      let files = [];
+      try { files = JSON.parse(raw.replace(/```json|```/g, "").trim()); } catch { files = []; }
+      setGdFilesList(files);
+    } catch { setGdFilesList([]); }
+    setGdFilesLoading(false);
+  };
+
+  return (
+    <div>
+      <div style={{ ...S.lbl, marginBottom: 20 }}>문서 저장 / 공유</div>
+
+      {/* Export section */}
+      <Collapsible title="내보내기 (Export)" defaultOpen={true}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <button style={S.btn} onClick={exportData}>JSON 백업 다운로드</button>
+            <div style={{ fontSize: 11, color: "#888", paddingTop: 10 }}>모든 데이터 (프로젝트, 일정, 회계, 할 일)</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <button style={S.sec} onClick={exportCSV}>회계 CSV 다운로드</button>
+            <div style={{ fontSize: 11, color: "#888", paddingTop: 10 }}>회계 내역을 엑셀에서 열 수 있는 형식으로</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <button style={{ ...S.btn, background: gdSaving ? "#888" : "#1a1a1a" }} onClick={saveToGdrive} disabled={gdSaving}>
+              {gdSaving ? "저장 중..." : "Google Drive에 백업"}
+            </button>
+            <div style={{ fontSize: 11, color: "#888", paddingTop: 10 }}>JSON 백업 파일을 Google Drive에 자동 저장</div>
+          </div>
+          {gdSaveResult && (
+            <div style={{ fontSize: 12, color: gdSaveResult.success ? "#27ae60" : "#c0392b", marginTop: 4 }}>
+              {gdSaveResult.success ? "✓ Google Drive 저장 완료" : "✗ 저장 실패. 다시 시도해주세요."}
+              {gdSaveResult.link && <a href={gdSaveResult.link} target="_blank" rel="noreferrer" style={{ marginLeft: 10, color: "#2980b9", fontSize: 11 }}>파일 열기</a>}
+            </div>
+          )}
+        </div>
+      </Collapsible>
+
+      {/* Google Drive backup files */}
+      <Collapsible title="Google Drive 백업 파일 목록" defaultOpen={false}>
+        <div style={{ marginBottom: 12 }}>
+          <button style={S.sec} onClick={listGdrive} disabled={gdFilesLoading}>
+            {gdFilesLoading ? "불러오는 중..." : "백업 파일 목록 불러오기"}
+          </button>
+        </div>
+        {gdFilesList === null && <div style={{ fontSize: 12, color: "#bbb" }}>버튼을 눌러 Google Drive의 백업 파일 목록을 확인하세요.</div>}
+        {gdFilesList !== null && gdFilesList.length === 0 && <div style={{ fontSize: 12, color: "#bbb" }}>백업 파일이 없습니다.</div>}
+        {gdFilesList && gdFilesList.map((f, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0ece6" }}>
+            <div>
+              <div style={{ fontSize: 13 }}>{f.name}</div>
+              <div style={{ fontSize: 10, color: "#bbb" }}>{f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString("ko-KR") : ""}</div>
+            </div>
+            {f.webViewLink && <a href={f.webViewLink} target="_blank" rel="noreferrer" style={{ ...S.mini, textDecoration: "none", color: "#2980b9", fontSize: 10 }}>열기</a>}
+          </div>
+        ))}
+      </Collapsible>
+
+      {/* Import section */}
+      <Collapsible title="가져오기 (Import)" defaultOpen={false}>
+        <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>JSON 백업 파일을 불러와 데이터를 복원합니다.<br />
+          <span style={{ color: "#c0392b" }}>⚠ 현재 데이터를 덮어씁니다.</span>
+        </div>
+        {importError && <div style={{ fontSize: 12, color: "#c0392b", marginBottom: 8 }}>✗ {importError}</div>}
+        <label style={{ ...S.sec, cursor: "pointer", display: "inline-block" }}>
+          JSON 파일 가져오기
+          <input ref={importRef} type="file" accept=".json" style={{ display: "none" }}
+            onChange={e => {
+              const file = e.target.files[0]; if (!file) return;
+              const reader = new FileReader();
+              reader.onload = ev => {
+                try {
+                  const data = JSON.parse(ev.target.result);
+                  if (!data.books) throw new Error("올바른 백업 파일이 아닙니다.");
+                  setImportError("가져오기는 페이지 새로고침 후 반영됩니다. (현재 세션 데이터 보존)");
+                } catch (err) { setImportError(err.message || "파일 파싱 오류"); }
+              };
+              reader.readAsText(file);
+              e.target.value = "";
+            }} />
+        </label>
+      </Collapsible>
+
+      {/* Summary */}
+      <Collapsible title="현재 데이터 현황" defaultOpen={false}>
+        {[["프로젝트", books.length + "권"], ["회계 내역", finance.length + "건"], ["캘린더 일정", calEvents.length + "개"], ["할 일", todos.length + "개"]].map(([l, v]) => (
+          <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #f0ece6" }}>
+            <span style={{ fontSize: 13 }}>{l}</span>
+            <span style={{ fontSize: 13, color: "#888" }}>{v}</span>
+          </div>
+        ))}
+      </Collapsible>
+    </div>
+  );
+}
+
+
+function BookDetail({ book, updateBook, onBack, onDelete, cards, setCards }) {
+  const [tab, setTab] = useState("기획서");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleVal, setTitleVal] = useState(book.title);
+
+  const upd = (key, val) => updateBook({ ...book, [key]: val });
+  const updBrief = (k, v) => upd("brief", { ...book.brief, [k]: v });
+  const updProd  = (k, v) => upd("production", { ...book.production, [k]: v });
+
+  // sync: ensure production.sections has an entry for each tocItem
+  const syncedSections = (book.brief.tocItems || []).map(ti => {
+    const existing = (book.production.sections || []).find(s => s.tocId === ti.id);
+    return existing || { tocId: ti.id };
+  });
+
+  const updateSection = (tocId, updated) => {
+    const sections = syncedSections.map(s => s.tocId === tocId ? updated : s);
+    updProd("sections", sections);
+  };
+
+  const addToFinanceFromJob = (job) => {
+    const entry = { id: uid(), type: "expense", category: "인쇄비", amount: job.cost, date: job.date, memo: `인쇄: ${job.vendor}${job.mockup !== "목업 없음" ? ` (${job.mockup})` : ""}`, payMethod: job.payMethod || "card", cardId: job.cardId || cards[0]?.id || "", autoAdded: true };
+    const updatedJobs = (book.production.printJobs || []).map(j => j.id === job.id ? { ...j, addedToFinance: true } : j);
+    updateBook({ ...book, finance: [...book.finance, entry], production: { ...book.production, printJobs: updatedJobs } });
+  };
+
+  const addToFinanceFromMaterial = (mat) => {
+    const entry = { id: uid(), type: "expense", category: "재료비", amount: mat.price, date: todayISO(), memo: `재료: ${mat.name}${mat.vendor ? ` (${mat.vendor})` : ""}`, payMethod: "card", cardId: cards[0]?.id || "", autoAdded: true };
+    const updatedMats = (book.production.materials || []).map(m => m.id === mat.id ? { ...m, addedToFinance: true } : m);
+    updateBook({ ...book, finance: [...book.finance, entry], production: { ...book.production, materials: updatedMats } });
+  };
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ ...S.sec, marginBottom: 16, fontSize: 11 }}>← 목록으로</button>
+
+      {/* Title */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        {editingTitle ? (
+          <>
+            <input value={titleVal} onChange={e => setTitleVal(e.target.value)} style={{ ...S.inp, fontSize: 20, flex: 1 }} autoFocus
+              onKeyDown={e => { if (e.key === "Enter") { upd("title", titleVal); setEditingTitle(false); } }} />
+            <button style={S.btn} onClick={() => { upd("title", titleVal); setEditingTitle(false); }}>저장</button>
+            <button style={S.sec} onClick={() => { setTitleVal(book.title); setEditingTitle(false); }}>취소</button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 22 }}>{book.title}</div>
+            <button onClick={() => { setTitleVal(book.title); setEditingTitle(true); }} style={{ ...S.mini }}>수정</button>
+          </>
+        )}
+      </div>
+
+      {/* Stage */}
+      <div style={{ display: "flex", gap: 3, margin: "12px 0 6px" }}>
+        {BOOK_STAGES.map((s, i) => (
+          <div key={s} onClick={() => upd("stage", s)} title={s} style={{ height: 4, flex: 1, background: i <= BOOK_STAGES.indexOf(book.stage) ? "#1a1a1a" : "#d4cfc8", cursor: "pointer", borderRadius: 1 }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 14 }}>
+        {BOOK_STAGES.map(s => (
+          <button key={s} onClick={() => upd("stage", s)} style={{ padding: "4px 10px", border: "1px solid", borderColor: book.stage === s ? "#1a1a1a" : "#e8e3dc", background: book.stage === s ? "#1a1a1a" : "transparent", color: book.stage === s ? "#f5f2ed" : "#aaa", fontSize: 10, letterSpacing: 1, cursor: "pointer", fontFamily: "Georgia,serif" }}>{s}</button>
+        ))}
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ ...S.lbl, marginBottom: 6 }}>목표 페어 / 이벤트</div>
+        <input value={book.targetFair} onChange={e => upd("targetFair", e.target.value)} placeholder="예: Sep 북페어" style={S.inp} />
+      </div>
+
+      {/* Sub-tabs */}
+      <div style={{ display: "flex", borderBottom: "1px solid #e8e3dc", marginBottom: 20, overflowX: "auto" }}>
+        {BOOK_TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{ padding: "9px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 11, letterSpacing: 1, color: tab === t ? "#1a1a1a" : "#bbb", borderBottom: tab === t ? "2px solid #1a1a1a" : "2px solid transparent", fontFamily: "Georgia,serif", whiteSpace: "nowrap" }}>{t}</button>
+        ))}
+      </div>
+
+      {/* ── 기획서 ── */}
+      {tab === "기획서" && (
+        <div>
+          <Field label="일정">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              {[["작업 시작일", "startDate"], ["목표 완성일", "targetDate"], ["최종 완성일", "finalDate"]].map(([lbl, key]) => (
+                <div key={key}>
+                  <div style={{ ...S.lbl, marginBottom: 5, fontSize: 9 }}>{lbl}</div>
+                  <input type="date" value={book.brief[key] || ""} onChange={e => updBrief(key, e.target.value)} style={S.inp} />
+                </div>
+              ))}
+            </div>
+          </Field>
+          <Field label="제작 사양">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 5 }}>판형</div>
+                <input value={book.brief.format || ""} onChange={e => updBrief("format", e.target.value)} placeholder="예: A5, B6, 210×148mm" style={S.inp} />
+              </div>
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 5 }}>인쇄 부수</div>
+                <input value={book.brief.edition || ""} onChange={e => updBrief("edition", e.target.value)} placeholder="예: 100부" style={S.inp} />
+              </div>
+            </div>
+          </Field>
+          <Field label="제작 목적">
+            <textarea value={book.brief.purpose || ""} onChange={e => updBrief("purpose", e.target.value)} placeholder="왜 만드는 책인가요?" style={{ ...S.inp, minHeight: 80, resize: "vertical" }} />
+          </Field>
+          <Field label="타겟 층">
+            <input value={book.brief.targetAudience || ""} onChange={e => updBrief("targetAudience", e.target.value)} placeholder="누구를 위한 책인가요?" style={S.inp} />
+          </Field>
+          <Field label="주제 / 내용">
+            <textarea value={book.brief.subject || ""} onChange={e => updBrief("subject", e.target.value)} placeholder="핵심 주제..." style={{ ...S.inp, minHeight: 80, resize: "vertical" }} />
+          </Field>
+          <Field label="바인딩 기법">
+            <input value={book.brief.binding || ""} onChange={e => updBrief("binding", e.target.value)} placeholder="예: 중철, 무선, 양장, 리소..." style={S.inp} />
+          </Field>
+          <Field label="목차 항목">
+            <TocEditor items={book.brief.tocItems || []} onChange={v => updBrief("tocItems", v)} />
+          </Field>
+          <Field label="레퍼런스">
+            {(book.brief.references || []).map(ref => (
+              <div key={ref.id} style={{ background: "#faf8f5", border: "1px solid #e8e3dc", borderRadius: 2, padding: "12px 14px", marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 10, color: "#bbb" }}>{ref.date}</span>
+                  <button style={S.del} onClick={() => updBrief("references", book.brief.references.filter(r => r.id !== ref.id))}>×</button>
+                </div>
+                <textarea value={ref.text} onChange={e => updBrief("references", book.brief.references.map(r => r.id === ref.id ? { ...r, text: e.target.value } : r))}
+                  placeholder="레퍼런스 설명, 출처, URL..." style={{ ...S.inp, minHeight: 56, resize: "vertical", marginBottom: 10 }} />
+                <PhotoUpload photos={ref.photos || []} onChange={photos => updBrief("references", book.brief.references.map(r => r.id === ref.id ? { ...r, photos } : r))} />
+              </div>
+            ))}
+            <button style={S.sec} onClick={() => updBrief("references", [...(book.brief.references || []), { id: uid(), date: todayKR(), text: "", photos: [] }])}>+ 레퍼런스 추가</button>
+          </Field>
+          <Field label="Bibliography">
+            <DatedLog
+              log={book.brief.bibliography || []}
+              onAdd={e => updBrief("bibliography", [...(book.brief.bibliography || []), e])}
+              onDelete={id => updBrief("bibliography", (book.brief.bibliography || []).filter(r => r.id !== id))}
+              placeholder="저자, 제목, 출판사, 연도..."
+            />
+          </Field>
+          <Field label="메모">
+            <DatedLog
+              log={book.brief.memoLog || []}
+              onAdd={e => updBrief("memoLog", [...(book.brief.memoLog || []), e])}
+              onDelete={id => updBrief("memoLog", (book.brief.memoLog || []).filter(r => r.id !== id))}
+              placeholder="기획 메모..."
+            />
+          </Field>
+        </div>
+      )}
+
+      {/* ── 제작 진행상황 ── */}
+      {tab === "제작 진행상황" && (
+        <div>
+          {/* TOC-linked sections */}
+          <div style={{ ...S.lbl, marginBottom: 10 }}>목차별 제작 상세</div>
+          {(book.brief.tocItems || []).length === 0 ? (
+            <div style={{ ...S.card, color: "#bbb", fontSize: 13 }}>기획서 탭에서 목차 항목을 먼저 추가해주세요.</div>
+          ) : (
+            syncedSections.map((sec, idx) => {
+              const tocItem = (book.brief.tocItems || []).find(t => t.id === sec.tocId);
+              if (!tocItem) return null;
+              return (
+                <Collapsible key={tocItem.id} title={`${idx + 1}. ${tocItem.title || "(제목 없음)"}`} badge={sec.pages || ""}>
+                  <ProductionSection tocItem={tocItem} section={sec} onChange={updated => updateSection(tocItem.id, updated)} />
+                </Collapsible>
+              );
+            })
+          )}
+
+          {/* Print jobs */}
+          <div style={{ ...S.lbl, marginBottom: 10, marginTop: 24 }}>인쇄</div>
+          <PrintJobs
+            jobs={book.production.printJobs || []}
+            onChange={jobs => updProd("printJobs", jobs)}
+            onAddToFinance={addToFinanceFromJob}
+            cards={cards}
+          />
+
+          {/* Materials */}
+          <div style={{ ...S.lbl, marginBottom: 10, marginTop: 24 }}>재료 구매 체크리스트</div>
+          <MaterialsList
+            items={book.production.materials || []}
+            onChange={mats => updProd("materials", mats)}
+            onAddToFinance={addToFinanceFromMaterial}
+            cards={cards}
+          />
+
+          {/* Revisions */}
+          <div style={{ ...S.lbl, marginBottom: 10, marginTop: 24 }}>수정 이력</div>
+          <DatedLog
+            log={book.production.revisions || []}
+            onAdd={e => updProd("revisions", [...(book.production.revisions || []), e])}
+            onDelete={id => updProd("revisions", (book.production.revisions || []).filter(r => r.id !== id))}
+            placeholder="수정 내용 기록..."
+          />
+
+          {/* Custom fields */}
+          <div style={{ ...S.lbl, marginBottom: 10, marginTop: 24 }}>기타 항목 (자유 추가)</div>
+          {(book.production.customFields || []).map(cf => (
+            <div key={cf.id} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+              <input value={cf.label} onChange={e => updProd("customFields", book.production.customFields.map(x => x.id === cf.id ? { ...x, label: e.target.value } : x))} placeholder="항목명" style={{ ...S.inp, flex: 1 }} />
+              <input value={cf.value} onChange={e => updProd("customFields", book.production.customFields.map(x => x.id === cf.id ? { ...x, value: e.target.value } : x))} placeholder="내용" style={{ ...S.inp, flex: 2 }} />
+              <button style={S.del} onClick={() => updProd("customFields", book.production.customFields.filter(x => x.id !== cf.id))}>×</button>
+            </div>
+          ))}
+          <button style={S.sec} onClick={() => updProd("customFields", [...(book.production.customFields || []), { id: uid(), label: "", value: "" }])}>+ 항목 추가</button>
+
+          {/* Reflection */}
+          <div style={{ ...S.lbl, marginBottom: 10, marginTop: 24 }}>Reflection</div>
+          <textarea value={book.reflection || ""} onChange={e => upd("reflection", e.target.value)}
+            placeholder="이 책에서 배운 것, 다음엔 어떻게 보완할지..."
+            style={{ ...S.inp, minHeight: 120, resize: "vertical" }} />
+        </div>
+      )}
+
+      {tab === "최종 제책" && <FinalBinding book={book} updateBook={updateBook} />}
+      {tab === "회계"     && <BookFinance book={book} updateBook={updateBook} cards={cards} setCards={setCards} />}
+      {tab === "인벤토리" && <BookInventory book={book} updateBook={updateBook} />}
+
+      <button onClick={() => { if (window.confirm("이 책을 삭제할까요?")) onDelete(book.id); }}
+        style={{ ...S.sec, color: "#c0392b", borderColor: "#c0392b", marginTop: 20 }}>책 삭제</button>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// GLOBAL FINANCE
+// ═══════════════════════════════════════════════════════════
+function GlobalFinance({ finance, setFinance, books, cards, setCards }) {
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ type: "expense", category: "", amount: "", date: todayISO(), memo: "", payMethod: "card", cardId: cards[0]?.id || "", bookId: null, receipt: null });
+  const [newCardName, setNewCardName] = useState("");
+  const [addingCard, setAddingCard] = useState(false);
+  const [search, setSearch] = useState({ text: "", bookId: "", dateFrom: "", dateTo: "" });
+
+  const totalInc = finance.filter(f => f.type === "income").reduce((s, f) => s + Number(f.amount), 0);
+  const totalExp = finance.filter(f => f.type === "expense").reduce((s, f) => s + Number(f.amount), 0);
+
+  const filtered = finance.filter(f => {
+    if (search.text && !f.category?.toLowerCase().includes(search.text.toLowerCase()) && !f.memo?.toLowerCase().includes(search.text.toLowerCase())) return false;
+    if (search.bookId && String(f.bookId) !== String(search.bookId)) return false;
+    if (search.dateFrom && f.date < search.dateFrom) return false;
+    if (search.dateTo && f.date > search.dateTo) return false;
+    return true;
+  });
+
+  const add = () => {
+    if (!form.category || !form.amount) return;
+    setFinance(fs => [...fs, { id: uid(), ...form, amount: Number(form.amount) }]);
+    setForm({ type: "expense", category: "", amount: "", date: todayISO(), memo: "", payMethod: "card", cardId: cards[0]?.id || "", bookId: null, receipt: null });
+    setAdding(false);
+  };
+
+  const addReceipt = (e, itemId) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => setFinance(fs => fs.map(f => f.id === itemId ? { ...f, receipt: ev.target.result } : f));
+    reader.readAsDataURL(file); e.target.value = "";
+  };
+
+  const payLabel = (item) => {
+    if (item.payMethod === "cash") return "현금";
+    if (item.payMethod === "other") return "기타";
+    const c = cards.find(c => c.id === item.cardId);
+    return c ? c.name : "";
+  };
+
+  return (
+    <div>
+      {/* Card management */}
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={S.lbl}>카드 관리</div>
+          <button style={S.mini} onClick={() => setAddingCard(true)}>+ 카드 추가</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {cards.map(c => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#faf8f5", border: "1px solid #e8e3dc", borderRadius: 2, padding: "4px 10px" }}>
+              <span style={{ fontSize: 12 }}>{c.name}</span>
+              {cards.length > 1 && <button style={{ ...S.del, fontSize: 14 }} onClick={() => setCards(cs => cs.filter(x => x.id !== c.id))}>×</button>}
+            </div>
+          ))}
+        </div>
+        {addingCard && (
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <input value={newCardName} onChange={e => setNewCardName(e.target.value)} placeholder="카드 이름" style={{ ...S.inp, flex: 1 }} autoFocus
+              onKeyDown={e => { if (e.key === "Enter" && newCardName.trim()) { setCards(cs => [...cs, { id: uid(), name: newCardName }]); setNewCardName(""); setAddingCard(false); } }} />
+            <button style={S.btn} onClick={() => { if (!newCardName.trim()) return; setCards(cs => [...cs, { id: uid(), name: newCardName }]); setNewCardName(""); setAddingCard(false); }}>추가</button>
+            <button style={S.sec} onClick={() => setAddingCard(false)}>취소</button>
+          </div>
+        )}
+      </div>
+
+      {/* Summary */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        {[["수입", totalInc, "#27ae60"], ["지출", totalExp, "#c0392b"], ["순이익", totalInc - totalExp, totalInc - totalExp >= 0 ? "#27ae60" : "#c0392b"]].map(([l, v, c]) => (
+          <div key={l} style={{ ...S.card, flex: 1, textAlign: "center", marginBottom: 0 }}>
+            <div style={{ ...S.lbl, marginBottom: 6 }}>{l}</div>
+            <div style={{ fontSize: 18, color: c }}>₩{v.toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ ...S.lbl, marginBottom: 8 }}>검색 / 필터</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <input placeholder="내용 검색" value={search.text} onChange={e => setSearch(s => ({ ...s, text: e.target.value }))} style={S.inp} />
+          <select value={search.bookId} onChange={e => setSearch(s => ({ ...s, bookId: e.target.value }))} style={S.inp}>
+            <option value="">전체 프로젝트</option>
+            {books.map(b => <option key={b.id} value={b.id}>{b.title}</option>)}
+          </select>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 4, fontSize: 9 }}>시작일</div>
+            <input type="date" value={search.dateFrom} onChange={e => setSearch(s => ({ ...s, dateFrom: e.target.value }))} style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 4, fontSize: 9 }}>종료일</div>
+            <input type="date" value={search.dateTo} onChange={e => setSearch(s => ({ ...s, dateTo: e.target.value }))} style={S.inp} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <button style={S.btn} onClick={() => setAdding(true)}>+ 내역 추가</button>
+      </div>
+
+      {adding && (
+        <div style={S.card}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>유형</div>
+              <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} style={S.inp}>
+                <option value="income">수입</option><option value="expense">지출</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>카테고리</div>
+              <input value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} placeholder="인쇄비, 재료비..." style={S.inp} />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>금액 (₩)</div>
+              <input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} style={S.inp} />
+            </div>
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>날짜</div>
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} style={S.inp} />
+            </div>
+            {form.type === "expense" && (
+              <PaymentFields form={form} setForm={setForm} cards={cards} setCards={setCards} />
+            )}
+            <div>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>프로젝트</div>
+              <select value={form.bookId || ""} onChange={e => setForm({ ...form, bookId: e.target.value || null })} style={S.inp}>
+                <option value="">미지정</option>
+                {books.map(b => <option key={b.id} value={b.id}>{b.title}</option>)}
+              </select>
+            </div>
+            <div style={{ gridColumn: "1/-1" }}>
+              <div style={{ ...S.lbl, marginBottom: 4 }}>메모</div>
+              <input value={form.memo} onChange={e => setForm({ ...form, memo: e.target.value })} style={S.inp} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button style={S.btn} onClick={add}>추가</button>
+            <button style={S.sec} onClick={() => setAdding(false)}>취소</button>
+          </div>
+        </div>
+      )}
+
+      {filtered.length === 0 && <div style={{ ...S.card, color: "#bbb", fontSize: 13 }}>내역이 없어요.</div>}
+      {[...filtered].reverse().map(item => {
+        const lb = item.bookId ? books.find(b => String(b.id) === String(item.bookId)) : null;
+        return (
+          <div key={item.id} style={{ ...S.card, marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 10, padding: "2px 8px", background: item.type === "income" ? "#27ae60" : "#c0392b", color: "#fff" }}>{item.type === "income" ? "수입" : "지출"}</span>
+                  <span style={{ fontSize: 13 }}>{item.category}</span>
+                  {item.autoAdded && <span style={{ fontSize: 10, color: "#bbb", border: "1px solid #e8e3dc", padding: "1px 6px" }}>자동</span>}
+                  {lb && <span style={{ fontSize: 10, color: "#888", border: "1px solid #e8e3dc", padding: "1px 6px" }}>{lb.title}</span>}
+                </div>
+                <div style={{ fontSize: 11, color: "#bbb", marginTop: 4 }}>
+                  {item.date}{item.memo ? ` — ${item.memo}` : ""}{payLabel(item) ? ` · ${payLabel(item)}` : ""}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ fontSize: 15, color: item.type === "income" ? "#27ae60" : "#c0392b" }}>{item.type === "income" ? "+" : "-"}₩{Number(item.amount).toLocaleString()}</div>
+                <label style={{ ...S.mini, cursor: "pointer" }}>
+                  {item.receipt ? "📷" : "영수증"}
+                  <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => addReceipt(e, item.id)} />
+                </label>
+                <button style={S.del} onClick={() => setFinance(fs => fs.filter(f => f.id !== item.id))}>×</button>
+              </div>
+            </div>
+            {item.receipt && <img src={item.receipt} alt="영수증" style={{ width: "100%", maxHeight: 200, objectFit: "contain", marginTop: 10, border: "1px solid #e8e3dc", borderRadius: 2 }} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════
+const MAIN_SECTIONS = ["Projects", "Todo", "Calendar", "Finance", "Application", "문서", "Reflection"];
+
+export default function App() {
+  const [section, setSection] = useState("Projects");
+  const [books, setBooks] = useState(() =>
+    ["fffff", "olob", "iphone photos trace monotype", "vintage 심슨", "landslide"]
+      .map((t, i) => ({ ...emptyBook(t), id: i + 1, targetFair: i === 1 || i === 2 ? "Sep 북페어" : "" }))
+  );
+  const [selectedBook, setSelectedBook] = useState(null);
+  const [addingBook, setAddingBook] = useState(false);
+  const [newBookTitle, setNewBookTitle] = useState("");
+  const [cards, setCards] = useState(DEFAULT_CARDS);
+
+  const [todos, setTodos] = useState([
+    { id: 1, text: "9월 북페어 신청 확인", priority: "high", done: false, bookId: null, date: todayKR() },
+    { id: 2, text: "olob 시리즈 콘셉트 구체화", priority: "high", done: false, bookId: 2, date: todayKR() },
+    { id: 3, text: "사진책 편집 방향 결정", priority: "high", done: false, bookId: 3, date: todayKR() },
+  ]);
+  const [addingTodo, setAddingTodo] = useState(false);
+  const [newTodo, setNewTodo] = useState({ text: "", priority: "medium", bookId: null, dueDate: "", category: "" });
+  const [customCategories, setCustomCategories] = useState([]);
+  const [addingCustomCat, setAddingCustomCat] = useState(false);
+  const [newCatName, setNewCatName] = useState("");
+
+  const [finance, setFinance] = useState([]);
+
+  const [calEvents, setCalEvents] = useState([
+    { id: 1, date: "2025-09-01", title: "북페어", type: "fair", bookId: null, memo: "" },
+  ]);
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(new Date().getMonth());
+  const [selDay, setSelDay] = useState(null);
+  const [newEvent, setNewEvent] = useState({ title: "", type: "deadline", bookId: null, memo: "", startTime: "", endTime: "" });
+  const [addingEvent, setAddingEvent] = useState(false);
+  const [showGoogleEvents, setShowGoogleEvents] = useState(true);
+  const [gcalSyncing, setGcalSyncing] = useState(false);
+
+  // Google Calendar events loaded from API (seeded with current data)
+  const [googleEvents] = useState([
+    { id: "gc_2h9bq7", date: "2026-05-02", title: "치과", time: "11:00", source: "google" },
+    { id: "gc_o9gle8", date: "2026-05-02", title: "도자기 픽업", time: "15:00", source: "google" },
+    { id: "gc_f2hg6i", date: "2026-05-03", title: "쿠팡 조리대 시키기", time: "09:00", source: "google" },
+    { id: "gc_tdbns0", date: "2026-05-03", title: "메조틴트수업", time: "10:30", source: "google" },
+    { id: "gc_1km7cg", date: "2026-05-03", title: "셰입오브타임4권 입고", time: "14:00", source: "google" },
+    { id: "gc_la39v6_0504", date: "2026-05-04", title: "요가-아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_sj6k1d", date: "2026-05-06", title: "명화 크라프트베르크", time: "17:00", source: "google" },
+    { id: "gc_lnbb44_0507", date: "2026-05-07", title: "아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_3h5p9u_0508", date: "2026-05-08", title: "Lower align", time: "18:30", source: "google" },
+    { id: "gc_mjqvg7", date: "2026-05-09", title: "퍼블리싱뒷풀이", time: "21:00", source: "google" },
+    { id: "gc_h3j4q6", date: "2026-05-10", title: "Photobook reading room 딩쿠스", time: "11:00", source: "google" },
+    { id: "gc_la39v6_0511", date: "2026-05-11", title: "요가-아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_df8frc", date: "2026-05-11", title: "언리미티드에디션참가모집", time: "20:30", source: "google" },
+    { id: "gc_f8c9df_0512", date: "2026-05-12", title: "요가-호흡 빈야사", time: "19:40", source: "google" },
+    { id: "gc_tenbov_0513", date: "2026-05-13", title: "아쉬탕가", time: "19:40", source: "google" },
+    { id: "gc_lnbb44_0514", date: "2026-05-14", title: "아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_3h5p9u_0515", date: "2026-05-15", title: "Lower align", time: "18:30", source: "google" },
+    { id: "gc_la39v6_0518", date: "2026-05-18", title: "요가-아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_f8c9df_0519", date: "2026-05-19", title: "요가-호흡 빈야사", time: "19:40", source: "google" },
+    { id: "gc_tenbov_0520", date: "2026-05-20", title: "아쉬탕가", time: "19:40", source: "google" },
+    { id: "gc_ur5ncb", date: "2026-05-21", title: "La piscine 무비랜드", time: "15:30", source: "google" },
+    { id: "gc_ka7f2g", date: "2026-05-21", title: "Hata yoga", time: "19:40", source: "google" },
+    { id: "gc_0au62g", date: "2026-05-22", title: "서재페", time: "12:30", source: "google" },
+    { id: "gc_3h5p9u_0522", date: "2026-05-22", title: "Lower align", time: "18:30", source: "google" },
+    { id: "gc_la39v6_0525", date: "2026-05-25", title: "요가-아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_f8c9df_0526", date: "2026-05-26", title: "요가-호흡 빈야사", time: "19:40", source: "google" },
+    { id: "gc_tenbov_0527", date: "2026-05-27", title: "아쉬탕가", time: "19:40", source: "google" },
+    { id: "gc_h91aqk", date: "2026-05-28", title: "병원", time: "15:30", source: "google" },
+    { id: "gc_lnbb44_0528", date: "2026-05-28", title: "아쉬탕가", time: "18:30", source: "google" },
+    { id: "gc_3h5p9u_0529", date: "2026-05-29", title: "Lower align", time: "18:30", source: "google" },
+    { id: "gc_ad9bil", date: "2026-05-31", title: "비플랫폼 독립출판", time: "16:00", source: "google" },
+    { id: "gc_tdgsqe", date: "2026-06-07", title: "비플랫폼", time: "16:00", source: "google" },
+    { id: "gc_vr07te", date: "2026-06-14", title: "비플랫폼", time: "16:00", source: "google" },
+    { id: "gc_tohq2q", date: "2026-06-20", title: "파뮤페", time: "12:00", source: "google" },
+    { id: "gc_p8b1nd", date: "2026-06-21", title: "비플랫폼", time: "16:00", source: "google" },
+    { id: "gc_b2s76n", date: "2026-07-08", title: "Parker Harris imprint artfair-opencall due", time: "10:00", source: "google" },
+  ]);
+
+  const updateBook = (b) => setBooks(bs => bs.map(x => x.id === b.id ? b : x));
+  const deleteBook = (id) => { setBooks(bs => bs.filter(b => b.id !== id)); setSelectedBook(null); };
+
+  const sortedTodos = [...todos].sort((a, b) => {
+    const p = { high: 0, medium: 1, low: 2 };
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    return p[a.priority] - p[b.priority];
+  });
+
+  const todayStr = todayISO();
+  const monthStr = `${calYear}-${String(calMonth + 1).padStart(2, "0")}`;
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const dayEvs = (d) => {
+    const dateStr = `${monthStr}-${String(d).padStart(2, "0")}`;
+    const appEvs = calEvents.filter(e => e.date === dateStr);
+    const gcalEvs = showGoogleEvents ? googleEvents.filter(e => e.date === dateStr) : [];
+    return [...appEvs, ...gcalEvs];
+  };
+  const selDateStr = selDay ? `${monthStr}-${String(selDay).padStart(2, "0")}` : null;
+
+  return (
+    <div style={{ fontFamily: "Georgia,serif", background: "#f5f2ed", minHeight: "100vh", color: "#1a1a1a" }}>
+      <div style={{ background: "#1a1a1a", color: "#f5f2ed", padding: "18px 24px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: 4, textTransform: "uppercase", opacity: 0.4, marginBottom: 4 }}>Publisher Dashboard</div>
+          <div style={{ fontSize: 20, letterSpacing: 4 }}>studio v.l.t.</div>
+        </div>
+        <div style={{ fontSize: 10, opacity: 0.3 }}>{new Date().toLocaleDateString("ko-KR")}</div>
+      </div>
+
+      <div style={{ display: "flex", borderBottom: "1px solid #d4cfc8", background: "#f5f2ed", overflowX: "auto" }}>
+        {MAIN_SECTIONS.map(s => (
+          <button key={s} onClick={() => { setSection(s); setSelectedBook(null); }} style={{ padding: "12px 18px", border: "none", background: "none", cursor: "pointer", fontSize: 11, letterSpacing: 2, textTransform: "uppercase", color: section === s ? "#1a1a1a" : "#aaa", borderBottom: section === s ? "2px solid #1a1a1a" : "2px solid transparent", fontFamily: "Georgia,serif", whiteSpace: "nowrap" }}>{s}</button>
+        ))}
+      </div>
+
+      <div style={{ padding: "24px 20px", maxWidth: 860, margin: "0 auto" }}>
+
+        {/* PROJECTS LIST */}
+        {section === "Projects" && !selectedBook && (() => {
+          const ideas = books.filter(b => b.stage === "Concept");
+          const inProgress = books.filter(b => ["Writing","Design","Print Ready","Printed"].includes(b.stage));
+          const done = books.filter(b => b.stage === "Distributing");
+
+          const stageColor = (stage) => {
+            if (stage === "Concept") return "#bbb";
+            if (stage === "Distributing") return "#27ae60";
+            return "#e67e22";
+          };
+
+          const BookCard = ({ book }) => (
+            <div onClick={() => setSelectedBook(book.id)} style={{ ...S.card, cursor: "pointer", marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ fontSize: 15 }}>{book.title}</div>
+                <span style={{ fontSize: 10, color: stageColor(book.stage), letterSpacing: 1, border: `1px solid ${stageColor(book.stage)}`, padding: "1px 8px", borderRadius: 10, flexShrink: 0, marginLeft: 8 }}>{book.stage}</span>
+              </div>
+              {book.targetFair && <div style={{ fontSize: 10, background: "#1a1a1a", color: "#f5f2ed", padding: "2px 8px", display: "inline-block", letterSpacing: 1, marginTop: 6 }}>{book.targetFair}</div>}
+              <div style={{ display: "flex", gap: 3, marginTop: 8 }}>
+                {BOOK_STAGES.map((s, i) => <div key={s} style={{ height: 3, flex: 1, background: i <= BOOK_STAGES.indexOf(book.stage) ? "#1a1a1a" : "#d4cfc8", borderRadius: 1 }} />)}
+              </div>
+            </div>
+          );
+
+          return (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <div style={S.lbl}>{books.length}권 총</div>
+                <button style={S.btn} onClick={() => setAddingBook(true)}>+ 프로젝트 추가</button>
+              </div>
+
+              {addingBook && (
+                <div style={S.card}>
+                  <input placeholder="프로젝트 제목" value={newBookTitle} onChange={e => setNewBookTitle(e.target.value)} style={S.inp} autoFocus
+                    onKeyDown={e => { if (e.key === "Enter" && newBookTitle.trim()) { setBooks(bs => [...bs, emptyBook(newBookTitle)]); setNewBookTitle(""); setAddingBook(false); } }} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button style={S.btn} onClick={() => { if (!newBookTitle.trim()) return; setBooks(bs => [...bs, emptyBook(newBookTitle)]); setNewBookTitle(""); setAddingBook(false); }}>추가</button>
+                    <button style={S.sec} onClick={() => setAddingBook(false)}>취소</button>
+                  </div>
+                </div>
+              )}
+
+              {/* 아이디어 */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={{ ...S.lbl }}>아이디어</div>
+                  <span style={{ fontSize: 10, color: "#bbb" }}>{ideas.length}</span>
+                </div>
+                {ideas.length === 0 ? <div style={{ fontSize: 12, color: "#ccc", paddingLeft: 4 }}>없음</div> : ideas.map(b => <BookCard key={b.id} book={b} />)}
+              </div>
+
+              {/* 진행중 */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={{ ...S.lbl }}>진행중인 프로젝트</div>
+                  <span style={{ fontSize: 10, color: "#bbb" }}>{inProgress.length}</span>
+                </div>
+                {inProgress.length === 0 ? <div style={{ fontSize: 12, color: "#ccc", paddingLeft: 4 }}>없음</div> : inProgress.map(b => <BookCard key={b.id} book={b} />)}
+              </div>
+
+              {/* 완료 */}
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={{ ...S.lbl }}>완료된 프로젝트</div>
+                  <span style={{ fontSize: 10, color: "#bbb" }}>{done.length}</span>
+                </div>
+                {done.length === 0 ? <div style={{ fontSize: 12, color: "#ccc", paddingLeft: 4 }}>없음</div> : done.map(b => <BookCard key={b.id} book={b} />)}
+              </div>
+            </div>
+          );
+        })()}
+
+        {section === "Projects" && selectedBook && (() => {
+          const book = books.find(b => b.id === selectedBook);
+          if (!book) return null;
+          return <BookDetail key={book.id} book={book} updateBook={updateBook} onBack={() => setSelectedBook(null)} onDelete={deleteBook} cards={cards} setCards={setCards} />;
+        })()}
+
+        {/* TODO */}
+        {section === "Todo" && (() => {
+          const today = todayISO();
+
+          // Auto-compute effective priority and category for each todo
+          const processed = todos.map(t => {
+            if (t.done) return t;
+            const daysLeft = t.dueDate
+              ? Math.ceil((new Date(t.dueDate) - new Date(today)) / 86400000)
+              : null;
+            // auto-escalate to high if within 7 days
+            const effectivePriority = (!t.done && daysLeft !== null && daysLeft <= 7)
+              ? "high"
+              : t.priority;
+            // is today: dueDate === today
+            const isToday = t.dueDate === today;
+            return { ...t, effectivePriority, isToday, daysLeft };
+          });
+
+          const todayItems    = processed.filter(t => !t.done && t.isToday);
+          const pendingItems  = processed.filter(t => !t.done && !t.isToday)
+            .sort((a, b) => {
+              const p = { high: 0, medium: 1, low: 2 };
+              if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+              if (a.dueDate) return -1; if (b.dueDate) return 1;
+              return p[a.effectivePriority] - p[b.effectivePriority];
+            });
+          const doneItems     = processed.filter(t => t.done)
+            .sort((a, b) => (b.doneDate || "").localeCompare(a.doneDate || ""));
+
+          // group done by date
+          const doneByDate = doneItems.reduce((acc, t) => {
+            const k = t.doneDate || "날짜 없음";
+            if (!acc[k]) acc[k] = [];
+            acc[k].push(t);
+            return acc;
+          }, {});
+
+          const checkTodo = (todo) => {
+            const doneDate = todayKR();
+            setTodos(ts => ts.map(t => t.id === todo.id ? { ...t, done: true, doneDate } : t));
+            // add to calendar as completed event
+            setCalEvents(es => [...es, {
+              id: uid(), date: today, title: `✓ ${todo.text}`,
+              type: "other", bookId: todo.bookId, memo: "완료된 업무"
+            }]);
+          };
+
+          const uncheckTodo = (todo) => {
+            setTodos(ts => ts.map(t => t.id === todo.id ? { ...t, done: false, doneDate: undefined } : t));
+          };
+
+          const TodoCard = ({ todo, showDone = false }) => {
+            const lb = todo.bookId ? books.find(b => b.id === todo.bookId) : null;
+            const overdue = !todo.done && todo.dueDate && todo.daysLeft < 0;
+            const urgent  = !todo.done && todo.effectivePriority === "high";
+            return (
+              <div style={{ ...S.card, marginBottom: 6, borderLeft: overdue ? "3px solid #c0392b" : urgent ? "3px solid #e67e22" : "3px solid transparent", display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <input type="checkbox" checked={!!todo.done}
+                  onChange={() => todo.done ? uncheckTodo(todo) : checkTodo(todo)}
+                  style={{ marginTop: 3, cursor: "pointer", width: 15, height: 15, flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, textDecoration: todo.done ? "line-through" : "none", color: todo.done ? "#bbb" : "#1a1a1a" }}>{todo.text}</div>
+                  <div style={{ fontSize: 10, color: "#bbb", marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <span>{todo.date}</span>
+                    {todo.dueDate && !todo.done && (
+                      <span style={{ color: overdue ? "#c0392b" : todo.daysLeft <= 7 ? "#e67e22" : "#888" }}>
+                        마감 {todo.dueDate}{overdue ? " · 기한 초과!" : todo.daysLeft === 0 ? " · 오늘!" : todo.daysLeft <= 7 ? ` · D-${todo.daysLeft}` : ""}
+                      </span>
+                    )}
+                    {!todo.done && <span style={{ color: PRIORITY_COLORS[todo.effectivePriority] }}>{PRIORITY_LABELS[todo.effectivePriority]}</span>}
+                    {lb && <span>· {lb.title}</span>}
+                    {!lb && todo.category && (
+                      <span style={{ color: todo.category === "사무" ? "#2980b9" : todo.category === "외부 활동" ? "#8e44ad" : "#7f8c8d" }}>· {todo.category}</span>
+                    )}
+                    {todo.duration && <span style={{ color: "#aaa" }}>· ⏱ {todo.duration}</span>}
+                    {todo.done && todo.doneDate && <span>완료: {todo.doneDate}</span>}
+                  </div>
+                </div>
+                <button style={S.del} onClick={() => setTodos(ts => ts.filter(t => t.id !== todo.id))}>×</button>
+              </div>
+            );
+          };
+
+          return (
+            <div>
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <div style={S.lbl}>{todos.filter(t => !t.done).length}개 남음</div>
+                <button style={S.btn} onClick={() => setAddingTodo(true)}>+ 업무 추가</button>
+              </div>
+
+              {/* Add form */}
+              {addingTodo && (
+                <div style={S.card}>
+                  <input placeholder="업무 내용" value={newTodo.text} onChange={e => setNewTodo({ ...newTodo, text: e.target.value })} style={S.inp} autoFocus />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                    <div>
+                      <div style={{ ...S.lbl, marginBottom: 4 }}>완료 기한</div>
+                      <input type="date" value={newTodo.dueDate || ""} onChange={e => setNewTodo({ ...newTodo, dueDate: e.target.value })} style={S.inp} />
+                    </div>
+                    <div>
+                      <div style={{ ...S.lbl, marginBottom: 4 }}>예상 소요시간</div>
+                      <select value={newTodo.duration || ""} onChange={e => setNewTodo({ ...newTodo, duration: e.target.value })} style={S.inp}>
+                        <option value="">미정</option>
+                        <option value="15m">15분</option>
+                        <option value="30m">30분</option>
+                        <option value="1h">1시간</option>
+                        <option value="2h">2시간</option>
+                        <option value="3h">3시간</option>
+                        <option value="반나절">반나절</option>
+                        <option value="하루">하루 종일</option>
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ ...S.lbl, marginBottom: 4 }}>우선순위</div>
+                      <select value={newTodo.priority} onChange={e => setNewTodo({ ...newTodo, priority: e.target.value })} style={S.inp}>
+                        <option value="high">긴급</option>
+                        <option value="medium">보통</option>
+                        <option value="low">나중에</option>
+                      </select>
+                    </div>
+                    <div style={{ gridColumn: "1/-1" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <div style={S.lbl}>카테고리</div>
+                        <button style={{ ...S.mini, fontSize: 10 }} onClick={() => setAddingCustomCat(v => !v)}>+ 카테고리 추가</button>
+                      </div>
+                      {addingCustomCat && (
+                        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                          <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="카테고리 이름" style={{ ...S.inp, flex: 1 }}
+                            onKeyDown={e => { if (e.key === "Enter" && newCatName.trim()) { setCustomCategories(cs => [...cs, newCatName.trim()]); setNewCatName(""); setAddingCustomCat(false); } }} />
+                          <button style={S.btn} onClick={() => { if (!newCatName.trim()) return; setCustomCategories(cs => [...cs, newCatName.trim()]); setNewCatName(""); setAddingCustomCat(false); }}>추가</button>
+                          <button style={S.sec} onClick={() => { setAddingCustomCat(false); setNewCatName(""); }}>취소</button>
+                        </div>
+                      )}
+                      <select value={newTodo.bookId ? String(newTodo.bookId) : (newTodo.category || "")} onChange={e => {
+                        const v = e.target.value;
+                        const fixed = ["사무", "외부 활동", "기타", ...customCategories];
+                        if (fixed.includes(v)) setNewTodo({ ...newTodo, bookId: null, category: v });
+                        else setNewTodo({ ...newTodo, bookId: v ? Number(v) : null, category: "" });
+                      }} style={S.inp}>
+                        <option value="">미지정</option>
+                        <optgroup label="── 진행중인 프로젝트">
+                          {books.filter(b => ["Writing","Design","Print Ready","Printed"].includes(b.stage)).map(b =>
+                            <option key={b.id} value={String(b.id)}>{b.title}</option>)}
+                        </optgroup>
+                        <optgroup label="── 아이디어">
+                          {books.filter(b => b.stage === "Concept").map(b =>
+                            <option key={b.id} value={String(b.id)}>{b.title}</option>)}
+                        </optgroup>
+                        <optgroup label="── 업무">
+                          <option value="사무">사무</option>
+                          <option value="외부 활동">외부 활동</option>
+                        </optgroup>
+                        {customCategories.length > 0 && (
+                          <optgroup label="── 추가된 카테고리">
+                            {customCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                          </optgroup>
+                        )}
+                        <optgroup label="──">
+                          <option value="기타">기타</option>
+                        </optgroup>
+                      </select>
+                      {customCategories.length > 0 && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                          {customCategories.map(c => (
+                            <div key={c} style={{ display: "flex", alignItems: "center", gap: 4, background: "#faf8f5", border: "1px solid #e8e3dc", borderRadius: 10, padding: "2px 10px", fontSize: 11 }}>
+                              {c}
+                              <button style={{ ...S.del, fontSize: 13 }} onClick={() => setCustomCategories(cs => cs.filter(x => x !== c))}>×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: "#bbb", marginTop: 8 }}>기한 1주일 이내 → 자동 긴급 / 당일 → 오늘의 업무로 이동</div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button style={S.btn} onClick={() => {
+                      if (!newTodo.text.trim()) return;
+                      const t = { id: uid(), ...newTodo, done: false, date: todayKR() };
+                      setTodos(ts => [...ts, t]);
+                      // add to calendar if dueDate set
+                      if (t.dueDate) {
+                        setCalEvents(es => [...es, { id: uid(), date: t.dueDate, title: t.text, type: "deadline", bookId: t.bookId, memo: "업무 마감" }]);
+                      }
+                      setNewTodo({ text: "", priority: "medium", bookId: null, dueDate: "", category: "" });
+                      setAddingTodo(false);
+                    }}>추가</button>
+                    <button style={S.sec} onClick={() => setAddingTodo(false)}>취소</button>
+                  </div>
+                </div>
+              )}
+
+              {/* 오늘의 업무 */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={{ ...S.lbl, color: "#1a1a1a" }}>오늘의 업무</div>
+                  {todayItems.length > 0 && <span style={{ fontSize: 10, background: "#c0392b", color: "#fff", borderRadius: 10, padding: "1px 8px" }}>{todayItems.length}</span>}
+                </div>
+                {todayItems.length === 0
+                  ? <div style={{ fontSize: 12, color: "#ccc", paddingLeft: 4 }}>오늘 마감인 업무 없음</div>
+                  : todayItems.map(t => <TodoCard key={t.id} todo={t} />)}
+              </div>
+
+              {/* 처리해야 할 업무 */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={S.lbl}>처리해야 할 업무</div>
+                  {pendingItems.length > 0 && <span style={{ fontSize: 10, color: "#888", border: "1px solid #e8e3dc", borderRadius: 10, padding: "1px 8px" }}>{pendingItems.length}</span>}
+                </div>
+                {pendingItems.length === 0
+                  ? <div style={{ fontSize: 12, color: "#ccc", paddingLeft: 4 }}>없음</div>
+                  : pendingItems.map(t => <TodoCard key={t.id} todo={t} />)}
+              </div>
+
+              {/* 완료한 업무 */}
+              <div>
+                <div style={{ ...S.lbl, marginBottom: 12 }}>완료한 업무</div>
+                {doneItems.length === 0
+                  ? <div style={{ fontSize: 12, color: "#ccc", paddingLeft: 4 }}>없음</div>
+                  : Object.entries(doneByDate).map(([date, items]) => (
+                    <div key={date} style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 11, color: "#bbb", marginBottom: 6, paddingLeft: 2 }}>{date}</div>
+                      {items.map(t => <TodoCard key={t.id} todo={t} showDone />)}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* CALENDAR */}
+        {section === "Calendar" && (
+          <div>
+            {/* Header with Google toggle */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => { if (calMonth === 0) { setCalMonth(11); setCalYear(y => y - 1); } else setCalMonth(m => m - 1); }} style={S.sec}>←</button>
+                <div style={{ fontSize: 14, letterSpacing: 3 }}>{calYear}. {String(calMonth + 1).padStart(2, "0")}</div>
+                <button onClick={() => { if (calMonth === 11) { setCalMonth(0); setCalYear(y => y + 1); } else setCalMonth(m => m + 1); }} style={S.sec}>→</button>
+              </div>
+              <button
+                onClick={() => setShowGoogleEvents(v => !v)}
+                style={{ ...S.mini, display: "flex", alignItems: "center", gap: 6, background: showGoogleEvents ? "#fafff8" : "transparent", borderColor: showGoogleEvents ? "#27ae60" : "#d4cfc8", color: showGoogleEvents ? "#27ae60" : "#aaa" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: showGoogleEvents ? "#27ae60" : "#ddd", display: "inline-block" }} />
+                Google Calendar {showGoogleEvents ? "ON" : "OFF"}
+              </button>
+            </div>
+
+            {/* Legend */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 10, color: "#888" }}>
+                <span style={{ width: 8, height: 8, borderRadius: 1, background: "#27ae60", display: "inline-block" }} />studio v.l.t.
+              </div>
+              {showGoogleEvents && (
+                <div style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 10, color: "#888" }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4285f4", display: "inline-block" }} />Google Calendar
+                </div>
+              )}
+              {Object.entries(EVENT_TYPES).map(([k, v]) => (
+                <div key={k} style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 10, color: "#888" }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 1, background: v.color, display: "inline-block" }} />{v.label}
+                </div>
+              ))}
+            </div>
+
+            {/* Grid */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 2 }}>
+              {["일","월","화","수","목","금","토"].map(d => <div key={d} style={{ textAlign: "center", fontSize: 10, color: "#bbb", padding: "4px 0" }}>{d}</div>)}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 }}>
+              {Array.from({ length: firstDay }).map((_, i) => <div key={`e${i}`} />)}
+              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => {
+                const evs = dayEvs(d);
+                const ds = `${monthStr}-${String(d).padStart(2, "0")}`;
+                const isToday = ds === todayStr;
+                const isSel = selDay === d;
+                return (
+                  <div key={d} onClick={() => { setSelDay(isSel ? null : d); setAddingEvent(false); }}
+                    style={{ minHeight: 52, padding: "4px 5px", background: isSel ? "#1a1a1a" : isToday ? "#f0ece6" : "#fff", border: `1px solid ${isSel ? "#1a1a1a" : "#e8e3dc"}`, cursor: "pointer", borderRadius: 2 }}>
+                    <div style={{ fontSize: 11, color: isSel ? "#f5f2ed" : isToday ? "#1a1a1a" : "#999", fontWeight: isToday ? "bold" : "normal", marginBottom: 2 }}>{d}</div>
+                    {evs.slice(0, 2).map(ev => (
+                      <div key={ev.id} style={{
+                        fontSize: 9,
+                        background: ev.source === "google" ? "#4285f4" : (EVENT_TYPES[ev.type]?.color || "#27ae60"),
+                        color: "#fff", padding: "1px 4px", marginBottom: 1, borderRadius: ev.source === "google" ? "8px" : 1,
+                        overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis"
+                      }}>{ev.title}</div>
+                    ))}
+                    {evs.length > 2 && <div style={{ fontSize: 9, color: isSel ? "#f5f2ed90" : "#bbb" }}>+{evs.length - 2}</div>}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Selected day panel */}
+            {selDay && (
+              <div style={{ ...S.card, marginTop: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={S.lbl}>{selDateStr}</div>
+                  <button style={S.btn} onClick={() => setAddingEvent(true)}>+ 일정 추가</button>
+                </div>
+                {addingEvent && (
+                  <div style={{ marginBottom: 12, padding: 12, background: "#faf8f5", border: "1px solid #e8e3dc", borderRadius: 2 }}>
+                    <input placeholder="일정 제목" value={newEvent.title} onChange={e => setNewEvent({ ...newEvent, title: e.target.value })} style={{ ...S.inp, marginBottom: 8 }} autoFocus />
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ ...S.lbl, marginBottom: 4 }}>시작 시간</div>
+                        <input type="time" value={newEvent.startTime || ""} onChange={e => setNewEvent({ ...newEvent, startTime: e.target.value })} style={S.inp} />
+                      </div>
+                      <div>
+                        <div style={{ ...S.lbl, marginBottom: 4 }}>종료 시간</div>
+                        <input type="time" value={newEvent.endTime || ""} onChange={e => setNewEvent({ ...newEvent, endTime: e.target.value })} style={S.inp} />
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                      <select value={newEvent.type} onChange={e => setNewEvent({ ...newEvent, type: e.target.value })} style={{ ...S.inp, flex: 1 }}>
+                        {Object.entries(EVENT_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                      </select>
+                      <select value={newEvent.bookId || ""} onChange={e => setNewEvent({ ...newEvent, bookId: e.target.value || null })} style={{ ...S.inp, flex: 1 }}>
+                        <option value="">책 미지정</option>
+                        {books.map(b => <option key={b.id} value={b.id}>{b.title}</option>)}
+                      </select>
+                    </div>
+                    <input placeholder="메모" value={newEvent.memo} onChange={e => setNewEvent({ ...newEvent, memo: e.target.value })} style={{ ...S.inp, marginBottom: 10 }} />
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button style={{ ...S.btn, background: gcalSyncing ? "#888" : "#1a1a1a" }} disabled={gcalSyncing} onClick={async () => {
+                        if (!newEvent.title.trim()) return;
+                        const appEv = { id: uid(), date: selDateStr, ...newEvent, source: "app" };
+                        setCalEvents(es => [...es, appEv]);
+                        // Push to Google Calendar via Anthropic API if time is set
+                        if (newEvent.startTime) {
+                          setGcalSyncing(true);
+                          try {
+                            const startISO = `${selDateStr}T${newEvent.startTime}:00+09:00`;
+                            const endH = newEvent.endTime
+                              ? `${selDateStr}T${newEvent.endTime}:00+09:00`
+                              : `${selDateStr}T${String(Number(newEvent.startTime.split(":")[0])).padStart(2,"0")}:${String(Number(newEvent.startTime.split(":")[1]) + 30 >= 60 ? Number(newEvent.startTime.split(":")[0]) + 1 : Number(newEvent.startTime.split(":")[0])).padStart(2,"0")}:00+09:00`;
+                            const res = await fetch("https://api.anthropic.com/v1/messages", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                model: "claude-sonnet-4-20250514",
+                                max_tokens: 1000,
+                                system: "You are a calendar assistant. Use the Google Calendar MCP tool to create a calendar event exactly as specified. Respond only with 'done' after creating it.",
+                                messages: [{ role: "user", content: `Create a Google Calendar event: title="${newEvent.title}", start="${startISO}", end="${endH}", description="studio v.l.t. — ${newEvent.memo || ""}", colorId="10"` }],
+                                mcp_servers: [{ type: "url", url: "https://calendarmcp.googleapis.com/mcp/v1", name: "google-calendar" }]
+                              })
+                            });
+                          } catch(e) { console.error("Google sync error:", e); }
+                          setGcalSyncing(false);
+                        }
+                        setNewEvent({ title: "", type: "deadline", bookId: null, memo: "", startTime: "", endTime: "" });
+                        setAddingEvent(false);
+                      }}>{gcalSyncing ? "Google 등록중..." : `추가${newEvent.startTime ? " + Google 동기화" : ""}`}</button>
+                      <button style={S.sec} onClick={() => setAddingEvent(false)}>취소</button>
+                    </div>
+                    {newEvent.startTime && <div style={{ fontSize: 10, color: "#27ae60", marginTop: 8 }}>✓ 시간 입력 시 Google Calendar에도 자동 등록됩니다</div>}
+                  </div>
+                )}
+                {dayEvs(selDay).length === 0 && !addingEvent && <div style={{ fontSize: 12, color: "#bbb" }}>일정 없음</div>}
+                {dayEvs(selDay).map(ev => (
+                  <div key={ev.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0ece6" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <div style={{ width: 8, height: 8, borderRadius: ev.source === "google" ? "50%" : "2px", background: ev.source === "google" ? "#4285f4" : (EVENT_TYPES[ev.type]?.color || "#27ae60"), flexShrink: 0 }} />
+                      <div>
+                        <div style={{ fontSize: 13 }}>{ev.title}</div>
+                        <div style={{ fontSize: 10, color: "#bbb" }}>
+                          {ev.source === "google" ? <span style={{ color: "#4285f4" }}>Google</span> : <span style={{ color: "#27ae60" }}>studio v.l.t.</span>}
+                          {ev.time && ` · ${ev.time}`}
+                          {ev.memo ? ` — ${ev.memo}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                    {ev.source !== "google" && (
+                      <button style={S.del} onClick={() => setCalEvents(es => es.filter(e => e.id !== ev.id))}>×</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Upcoming */}
+            <div style={{ marginTop: 20 }}>
+              <div style={{ ...S.lbl, marginBottom: 10 }}>다가오는 일정</div>
+              {(() => {
+                const appUpcoming = calEvents.filter(e => e.date >= todayStr);
+                const gcalUpcoming = showGoogleEvents ? googleEvents.filter(e => e.date >= todayStr) : [];
+                const all = [...appUpcoming, ...gcalUpcoming].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
+                return all.length === 0
+                  ? <div style={{ fontSize: 12, color: "#bbb" }}>예정된 일정 없음</div>
+                  : all.map(ev => (
+                    <div key={ev.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 0", borderBottom: "1px solid #e8e3dc" }}>
+                      <div style={{ fontSize: 11, color: "#bbb", minWidth: 84 }}>{ev.date}</div>
+                      <div style={{ width: 6, height: 6, borderRadius: ev.source === "google" ? "50%" : "2px", background: ev.source === "google" ? "#4285f4" : (EVENT_TYPES[ev.type]?.color || "#27ae60"), flexShrink: 0 }} />
+                      <div style={{ flex: 1, fontSize: 13 }}>{ev.title}</div>
+                      {ev.time && <div style={{ fontSize: 11, color: "#bbb" }}>{ev.time}</div>}
+                    </div>
+                  ));
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* GLOBAL FINANCE */}
+        {section === "Finance" && (
+          <GlobalFinance finance={finance} setFinance={setFinance} books={books} cards={cards} setCards={setCards} />
+        )}
+
+        {/* PUBLISHER PLAN */}
+        {section === "Application" && (
+          <PublisherPlan books={books} calEvents={calEvents} googleEvents={googleEvents} />
+        )}
+
+        {/* DOCUMENT MANAGER */}
+        {section === "문서" && (
+          <DocumentManager books={books} finance={finance} calEvents={calEvents} todos={todos} />
+        )}
+
+        {/* REFLECTION */}
+        {section === "Reflection" && (
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 20 }}>Publisher Reflection</div>
+            {books.filter(b => b.reflection).map(book => (
+              <div key={book.id} style={S.card}>
+                <div style={{ ...S.lbl, marginBottom: 8 }}>{book.title}</div>
+                <div style={{ fontSize: 13, color: "#555", lineHeight: 1.8, whiteSpace: "pre-wrap" }}>{book.reflection}</div>
+              </div>
+            ))}
+            {books.filter(b => b.reflection).length === 0 && (
+              <div style={{ fontSize: 13, color: "#bbb", textAlign: "center", padding: "60px 0" }}>
+                아직 기록된 reflection이 없어요.<br />
+                <span style={{ fontSize: 11 }}>Projects → 제작 진행상황 → Reflection에서 작성해보세요.</span>
+              </div>
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
