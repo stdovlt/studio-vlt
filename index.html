@@ -1706,29 +1706,40 @@ function GlobalFinance({ finance, setFinance, books, cards, setCards }) {
 // ═══════════════════════════════════════════════════════════
 const MAIN_SECTIONS = ["Projects", "Todo", "Calendar", "Finance", "Application", "문서", "Reflection"];
 
+const load = (key, fallback) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } };
+const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
+
 function App() {
   const [section, setSection] = useState("Projects");
-  const [books, setBooks] = useState([]);
+  const [books, setBooks] = useState(() => load("vlt_books", []));
   const [selectedBook, setSelectedBook] = useState(null);
   const [addingBook, setAddingBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState("");
-  const [cards, setCards] = useState(DEFAULT_CARDS);
+  const [cards, setCards] = useState(() => load("vlt_cards", DEFAULT_CARDS));
 
-  const [todos, setTodos] = useState([]);
+  const [todos, setTodos] = useState(() => load("vlt_todos", []));
   const [addingTodo, setAddingTodo] = useState(false);
   const [newTodo, setNewTodo] = useState({ text: "", priority: "medium", bookId: null, dueDate: "", category: "" });
-  const [customCategories, setCustomCategories] = useState([]);
+  const [customCategories, setCustomCategories] = useState(() => load("vlt_cats", []));
   const [addingCustomCat, setAddingCustomCat] = useState(false);
   const [newCatName, setNewCatName] = useState("");
 
-  const [finance, setFinance] = useState([]);
+  const [finance, setFinance] = useState(() => load("vlt_finance", []));
 
-  const [calEvents, setCalEvents] = useState([]);
+  const [calEvents, setCalEvents] = useState(() => load("vlt_cal", []));
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [selDay, setSelDay] = useState(null);
   const [newEvent, setNewEvent] = useState({ title: "", type: "deadline", bookId: null, memo: "", startTime: "", endTime: "" });
   const [addingEvent, setAddingEvent] = useState(false);
+
+  const { useEffect } = React;
+  useEffect(() => { save("vlt_books", books); }, [books]);
+  useEffect(() => { save("vlt_cards", cards); }, [cards]);
+  useEffect(() => { save("vlt_todos", todos); }, [todos]);
+  useEffect(() => { save("vlt_cats", customCategories); }, [customCategories]);
+  useEffect(() => { save("vlt_finance", finance); }, [finance]);
+  useEffect(() => { save("vlt_cal", calEvents); }, [calEvents]);
 
   const googleEvents = [];
 
