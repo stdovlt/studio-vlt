@@ -1125,8 +1125,8 @@ function DocumentManager({ books, finance, calEvents, todos }) {
       const bk = books.find(b => String(b.id) === String(f.bookId));
       rows.push([f.date, f.type === "income" ? "수입" : "지출", f.category, f.amount, bk?.title || "", f.memo || ""]);
     });
-    const csv = rows.map(r => r.map(c => ['"', String(c).replace(/"/g, '""'), '"'].join("")).join(",")).join("
-");
+    const nl = String.fromCharCode(10);
+    const csv = rows.map(r => r.map(c => ['"', String(c).replace(/"/g, '""'), '"'].join("")).join(",")).join(nl);
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -2224,8 +2224,7 @@ function App() {
     </div>
   );
 }
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
+const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(React.createElement(App));
   </script>
 </body>
