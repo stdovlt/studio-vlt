@@ -1125,7 +1125,7 @@ function DocumentManager({ books, finance, calEvents, todos }) {
       const bk = books.find(b => String(b.id) === String(f.bookId));
       rows.push([f.date, f.type === "income" ? "수입" : "지출", f.category, f.amount, bk?.title || "", f.memo || ""]);
     });
-    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("
+    const csv = rows.map(r => r.map(c => ['"', String(c).replace(/"/g, '""'), '"'].join("")).join(",")).join("
 ");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
