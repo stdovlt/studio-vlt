@@ -9,6 +9,7 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
   <style>* { margin: 0; padding: 0; box-sizing: border-box; }</style>
 </head>
 <body>
@@ -82,13 +83,29 @@ const S = {
 function PhotoUpload({ photos = [], onChange, small = false }) {
   const ref = useRef();
   const sz = small ? 52 : 68;
-  const add = (e) => {
-    Array.from(e.target.files).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = ev => onChange([...photos, { id: uid(), src: ev.target.result, name: file.name }]);
-      reader.readAsDataURL(file);
-    });
+  const [uploading, setUploading] = useState(false);
+  const add = async (e) => {
+    const files = Array.from(e.target.files);
     e.target.value = "";
+    for (const file of files) {
+      const photoId = uid();
+      // Try Firebase Storage first
+      if (fbReady && firebase.storage) {
+        try {
+          setUploading(true);
+          const storageRef = firebase.storage().ref(`photos/${photoId}_${file.name}`);
+          await storageRef.put(file);
+          const url = await storageRef.getDownloadURL();
+          onChange([...photos, { id: photoId, src: url, name: file.name, stored: true }]);
+          setUploading(false);
+          continue;
+        } catch(err) { console.warn("Storage upload failed, falling back to base64", err); setUploading(false); }
+      }
+      // Fallback to base64
+      const reader = new FileReader();
+      reader.onload = ev => onChange([...photos, { id: photoId, src: ev.target.result, name: file.name }]);
+      reader.readAsDataURL(file);
+    }
   };
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -99,7 +116,9 @@ function PhotoUpload({ photos = [], onChange, small = false }) {
             style={{ position: "absolute", top: -5, right: -5, background: "#1a1a1a", color: "#fff", border: "none", borderRadius: "50%", width: 16, height: 16, fontSize: 10, cursor: "pointer", lineHeight: "16px", textAlign: "center", padding: 0 }}>×</button>
         </div>
       ))}
-      <button onClick={() => ref.current.click()} style={{ width: sz, height: sz, border: "1px dashed #d4cfc8", background: "#faf8f5", cursor: "pointer", fontSize: 18, color: "#bbb", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+      <button onClick={() => ref.current.click()} style={{ width: sz, height: sz, border: "1px dashed #d4cfc8", background: uploading ? "#f0ece6" : "#faf8f5", cursor: "pointer", fontSize: uploading ? 10 : 18, color: "#bbb", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {uploading ? "↑" : "+"}
+      </button>
       <input ref={ref} type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }} onChange={add} />
     </div>
   );
