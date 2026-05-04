@@ -941,10 +941,34 @@ function FinalBinding({ book, updateBook }) {
           </div>
         )}
       </Field>
+      <Field label="출판 정보">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>작가</div>
+            <input value={fb.author || ""} onChange={e => upd("author", e.target.value)} placeholder="예: 이진리" style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>편집자</div>
+            <input value={fb.editor || ""} onChange={e => upd("editor", e.target.value)} style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>발행인</div>
+            <input value={fb.publisher || ""} onChange={e => upd("publisher", e.target.value)} placeholder="예: studio v.l.t." style={S.inp} />
+          </div>
+          <div>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>출판일</div>
+            <input type="date" value={fb.pubDate || ""} onChange={e => upd("pubDate", e.target.value)} style={S.inp} />
+          </div>
+          <div style={{ gridColumn: "1/-1" }}>
+            <div style={{ ...S.lbl, marginBottom: 5 }}>ISBN</div>
+            <input value={fb.isbn || ""} onChange={e => upd("isbn", e.target.value)} placeholder="예: 979-11-000000-0-0" style={S.inp} />
+          </div>
+        </div>
+      </Field>
       <Field label="사진 / 교정지">
         <PhotoUpload photos={fb.photos || []} onChange={v => upd("photos", v)} />
       </Field>
-      <Field label="제책 메모">
+      <Field label="메모">
         <DatedLog
           log={fb.memoLog || []}
           onAdd={e => upd("memoLog", [...(fb.memoLog || []), e])}
