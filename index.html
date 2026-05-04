@@ -7,6 +7,8 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
   <style>* { margin: 0; padding: 0; box-sizing: border-box; }</style>
 </head>
 <body>
@@ -1709,37 +1711,108 @@ const MAIN_SECTIONS = ["Projects", "Todo", "Calendar", "Finance", "Application",
 const load = (key, fallback) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; } };
 const save = (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} };
 
+// Firebase config
+const FB_CONFIG = {
+  apiKey: "AIzaSyBtLoL0JEzjb37FPOYc1twTSc-Xx_jf2mk",
+  authDomain: "studio-vlt-234b6.firebaseapp.com",
+  projectId: "studio-vlt-234b6",
+  storageBucket: "studio-vlt-234b6.firebasestorage.app",
+  messagingSenderId: "62026027814",
+  appId: "1:62026027814:web:32326f306190c09fd927e7"
+};
+
+let db = null;
+let fbReady = false;
+
+const initFirebase = () => {
+  if (fbReady) return;
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FB_CONFIG);
+    db = firebase.firestore();
+    fbReady = true;
+  } catch(e) { console.warn("Firebase init failed", e); }
+};
+
+const fbSave = async (key, val) => {
+  save(key, val); // always save to localStorage too
+  if (!fbReady) return;
+  try {
+    await db.collection("studio-vlt").doc(key).set({ data: JSON.stringify(val), updatedAt: Date.now() });
+  } catch(e) { console.warn("Firebase save failed", e); }
+};
+
+const fbLoad = async (key, fallback) => {
+  const local = load(key, null);
+  if (!fbReady) return local ?? fallback;
+  try {
+    const doc = await db.collection("studio-vlt").doc(key).get();
+    if (!doc.exists) return local ?? fallback;
+    const remote = JSON.parse(doc.data().data);
+    save(key, remote); // update local cache
+    return remote;
+  } catch(e) { return local ?? fallback; }
+};
+
 function App() {
+  const [ready, setReady] = useState(false);
   const [section, setSection] = useState("Projects");
-  const [books, setBooks] = useState(() => load("vlt_books", []));
+  const [books, setBooks] = useState([]);
   const [selectedBook, setSelectedBook] = useState(null);
   const [addingBook, setAddingBook] = useState(false);
   const [newBookTitle, setNewBookTitle] = useState("");
-  const [cards, setCards] = useState(() => load("vlt_cards", DEFAULT_CARDS));
+  const [cards, setCards] = useState(DEFAULT_CARDS);
 
-  const [todos, setTodos] = useState(() => load("vlt_todos", []));
+  const [todos, setTodos] = useState([]);
   const [addingTodo, setAddingTodo] = useState(false);
   const [newTodo, setNewTodo] = useState({ text: "", priority: "medium", bookId: null, dueDate: "", category: "" });
-  const [customCategories, setCustomCategories] = useState(() => load("vlt_cats", []));
+  const [customCategories, setCustomCategories] = useState([]);
   const [addingCustomCat, setAddingCustomCat] = useState(false);
   const [newCatName, setNewCatName] = useState("");
 
-  const [finance, setFinance] = useState(() => load("vlt_finance", []));
+  const [finance, setFinance] = useState([]);
 
-  const [calEvents, setCalEvents] = useState(() => load("vlt_cal", []));
+  const [calEvents, setCalEvents] = useState([]);
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [selDay, setSelDay] = useState(null);
   const [newEvent, setNewEvent] = useState({ title: "", type: "deadline", bookId: null, memo: "", startTime: "", endTime: "" });
   const [addingEvent, setAddingEvent] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("");
 
   const { useEffect } = React;
-  useEffect(() => { save("vlt_books", books); }, [books]);
-  useEffect(() => { save("vlt_cards", cards); }, [cards]);
-  useEffect(() => { save("vlt_todos", todos); }, [todos]);
-  useEffect(() => { save("vlt_cats", customCategories); }, [customCategories]);
-  useEffect(() => { save("vlt_finance", finance); }, [finance]);
-  useEffect(() => { save("vlt_cal", calEvents); }, [calEvents]);
+
+  // Load data on mount
+  useEffect(() => {
+    initFirebase();
+    (async () => {
+      const [b, c, t, cats, f, cal] = await Promise.all([
+        fbLoad("vlt_books", []),
+        fbLoad("vlt_cards", DEFAULT_CARDS),
+        fbLoad("vlt_todos", []),
+        fbLoad("vlt_cats", []),
+        fbLoad("vlt_finance", []),
+        fbLoad("vlt_cal", []),
+      ]);
+      setBooks(b); setCards(c); setTodos(t);
+      setCustomCategories(cats); setFinance(f); setCalEvents(cal);
+      setReady(true);
+    })();
+  }, []);
+
+  // Save on change (debounced)
+  useEffect(() => { if (!ready) return; fbSave("vlt_books", books); }, [books, ready]);
+  useEffect(() => { if (!ready) return; fbSave("vlt_cards", cards); }, [cards, ready]);
+  useEffect(() => { if (!ready) return; fbSave("vlt_todos", todos); }, [todos, ready]);
+  useEffect(() => { if (!ready) return; fbSave("vlt_cats", customCategories); }, [customCategories, ready]);
+  useEffect(() => { if (!ready) return; fbSave("vlt_finance", finance); }, [finance, ready]);
+  useEffect(() => { if (!ready) return; fbSave("vlt_cal", calEvents); }, [calEvents, ready]);
+
+  if (!ready) return (
+    <div style={{ fontFamily: "Georgia,serif", background: "#f5f2ed", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+      <div style={{ fontSize: 20, letterSpacing: 4 }}>studio v.l.t.</div>
+      <div style={{ fontSize: 11, color: "#bbb", letterSpacing: 2 }}>불러오는 중...</div>
+    </div>
+  );
 
   const googleEvents = [];
 
